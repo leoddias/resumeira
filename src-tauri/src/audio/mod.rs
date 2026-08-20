@@ -5,6 +5,7 @@
 //! and tested independently. Nothing in this file talks to hardware.
 
 pub mod capture;
+pub mod decoder;
 pub mod encoder;
 pub mod mixer;
 pub mod resample;
