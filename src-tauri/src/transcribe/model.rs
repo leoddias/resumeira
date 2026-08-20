@@ -191,14 +191,28 @@ where
         return result.map(|_| final_path);
     }
 
-    match verify(&staging, info.sha256) {
+    // Hashing 1.6 GB takes seconds of solid CPU. Doing it inline would
+    // block a runtime worker thread and stall every other async task in the
+    // app, including the UI's state queries.
+    let staging_for_hash = staging.clone();
+    let expected = info.sha256;
+    let verified = tokio::task::spawn_blocking(move || verify(&staging_for_hash, expected))
+        .await
+        .map_err(|err| {
+            TranscribeError::LocalEngine(format!("checksum verification did not run: {err}"))
+        })?;
+
+    match verified {
         Ok(true) => {
-            tokio::fs::rename(&staging, &final_path)
-                .await
-                .map_err(|source| TranscribeError::Io {
+            if let Err(source) = tokio::fs::rename(&staging, &final_path).await {
+                // Leave nothing half-installed behind: the staging file
+                // verified, but without the rename it is not the model.
+                let _ = tokio::fs::remove_file(&staging).await;
+                return Err(TranscribeError::Io {
                     path: final_path.display().to_string(),
                     source,
-                })?;
+                });
+            }
             Ok(final_path)
         }
         Ok(false) => {
@@ -214,6 +228,13 @@ where
     }
 }
 
+/// How long to wait for the download server to answer at all.
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// How long a download may go without delivering any bytes before it is
+/// treated as stalled. Applies between reads, not to the whole transfer.
+const STALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// The network half of [`download`], split out so the temp-file/verify/
 /// rename bookkeeping above stays linear and easy to audit.
 async fn stream_to_file<F>(
@@ -224,7 +245,22 @@ async fn stream_to_file<F>(
 where
     F: FnMut(DownloadProgress) + Send,
 {
-    let response = reqwest::get(info.url)
+    // Without a timeout a stalled server leaves the download spinning
+    // forever with a progress bar that never moves and no way to find out
+    // why. The connect timeout is short; the overall request has none,
+    // because a 1.6 GB body legitimately takes minutes.
+    let client = reqwest::Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .read_timeout(STALL_TIMEOUT)
+        .build()
+        .map_err(|err| TranscribeError::Network {
+            provider: "model-download",
+            reason: err.to_string(),
+        })?;
+
+    let response = client
+        .get(info.url)
+        .send()
         .await
         .map_err(|err| TranscribeError::Network {
             provider: "model-download",

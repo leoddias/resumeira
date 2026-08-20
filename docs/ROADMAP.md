@@ -102,3 +102,10 @@ tool, stop investing.
 - Band-limited (sinc) resampling — M1's linear interpolation has no
   anti-aliasing filter; fine for speech into Whisper, revisit if audio is
   ever reused for anything else
+- Model download: drive `download()` end-to-end in the happy-path test (needs
+  an injectable catalog/URL seam), and remove a dangling symlink at a model's
+  final path instead of no-opping on delete
+- Transcription: chunk audio over the provider's 25 MB limit instead of
+  refusing it
+- When the Tauri command wiring lands, keep audio paths built from generated
+  ids, never from a user-typed meeting title, so a title cannot reach a log
