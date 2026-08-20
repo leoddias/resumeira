@@ -8,6 +8,7 @@ pub mod audio;
 pub mod commands;
 pub mod recorder;
 pub mod session;
+pub mod summarize;
 pub mod tracks;
 pub mod transcribe;
 pub mod tray;
