@@ -109,3 +109,8 @@ tool, stop investing.
   refusing it
 - When the Tauri command wiring lands, keep audio paths built from generated
   ids, never from a user-typed meeting title, so a title cannot reach a log
+- `storage::write_note` does not `sync_all()` before the rename, so a hard
+  power loss (not a process crash) could lose a brand-new note; the existing
+  note's safety is unaffected and tested
+- `index::search` uses `LIKE` rather than SQLite FTS5 — no ranking or
+  tokenizing; revisit with an FTS5 feature flag if search quality matters
