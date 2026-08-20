@@ -273,29 +273,18 @@ struct AnthropicMessage {
 impl<'a> AnthropicRequest<'a> {
     /// Anthropic takes the system prompt as a top-level field, not a message
     /// with `role: "system"` — any `ChatRole::System` entries are pulled out
-    /// of `messages` and joined into `system` instead.
+    /// of `messages` and joined into `system` instead. The split happens in
+    /// [`split_system_and_conversation`], which hands back conversation turns
+    /// as [`ConversationRole`] — a type with no `System` variant — so there is
+    /// no system case left to map here, let alone one to panic on.
     fn build(model: &'a str, messages: &[ChatMessage]) -> Self {
-        let system: Vec<&str> = messages
-            .iter()
-            .filter(|message| message.role == ChatRole::System)
-            .map(|message| message.content.as_str())
-            .collect();
-        let system = if system.is_empty() {
-            None
-        } else {
-            Some(system.join("\n\n"))
-        };
+        let (system, conversation) = split_system_and_conversation(messages);
 
-        let messages = messages
-            .iter()
-            .filter(|message| message.role != ChatRole::System)
-            .map(|message| AnthropicMessage {
-                role: match message.role {
-                    ChatRole::User => "user",
-                    ChatRole::Assistant => "assistant",
-                    ChatRole::System => unreachable!("system messages are filtered above"),
-                },
-                content: message.content.clone(),
+        let messages = conversation
+            .into_iter()
+            .map(|(role, content)| AnthropicMessage {
+                role: role.into(),
+                content: content.to_owned(),
             })
             .collect();
 
@@ -306,6 +295,57 @@ impl<'a> AnthropicRequest<'a> {
             messages,
         }
     }
+}
+
+/// A conversation turn's role, deliberately excluding system: once messages
+/// pass through [`split_system_and_conversation`], a conversation turn can
+/// only ever be a user or assistant turn. Making that a type-level fact
+/// (rather than an invariant upheld by filtering before mapping) is what
+/// removes the `unreachable!()` this module used to carry on this path.
+enum ConversationRole {
+    User,
+    Assistant,
+}
+
+impl From<ConversationRole> for &'static str {
+    fn from(role: ConversationRole) -> Self {
+        match role {
+            ConversationRole::User => "user",
+            ConversationRole::Assistant => "assistant",
+        }
+    }
+}
+
+/// Splits `messages` into Anthropic's top-level system text (joined with
+/// blank lines, in case there is more than one system message) and the
+/// remaining turns in their original order, each tagged with
+/// [`ConversationRole`]. This is the only place `ChatRole::System` is matched
+/// against; every consumer downstream works with a type that cannot express
+/// it, regardless of message order.
+fn split_system_and_conversation(
+    messages: &[ChatMessage],
+) -> (Option<String>, Vec<(ConversationRole, &str)>) {
+    let mut system = Vec::new();
+    let mut conversation = Vec::new();
+
+    for message in messages {
+        match message.role {
+            ChatRole::System => system.push(message.content.as_str()),
+            ChatRole::User => {
+                conversation.push((ConversationRole::User, message.content.as_str()));
+            }
+            ChatRole::Assistant => {
+                conversation.push((ConversationRole::Assistant, message.content.as_str()));
+            }
+        }
+    }
+
+    let system = if system.is_empty() {
+        None
+    } else {
+        Some(system.join("\n\n"))
+    };
+    (system, conversation)
 }
 
 #[derive(Deserialize)]
@@ -439,6 +479,43 @@ mod tests {
         let request = AnthropicRequest::build("claude-sonnet-5", &only_user);
         let json = serde_json::to_value(&request).expect("serialize");
         assert!(json.get("system").is_none());
+    }
+
+    #[test]
+    fn anthropic_request_pulls_out_a_system_message_wherever_it_appears() {
+        // This is the shape that used to reach the removed `unreachable!()`:
+        // a system message is not necessarily first or filtered out before
+        // the role-mapping step runs, so it must be handled correctly no
+        // matter where it sits among user/assistant turns.
+        let interleaved = vec![
+            ChatMessage {
+                role: ChatRole::User,
+                content: "hi".to_owned(),
+            },
+            ChatMessage {
+                role: ChatRole::System,
+                content: "Be concise.".to_owned(),
+            },
+            ChatMessage {
+                role: ChatRole::Assistant,
+                content: "ok".to_owned(),
+            },
+            ChatMessage {
+                role: ChatRole::System,
+                content: "Use bullet points.".to_owned(),
+            },
+        ];
+        let request = AnthropicRequest::build("claude-sonnet-5", &interleaved);
+
+        assert_eq!(
+            request.system.as_deref(),
+            Some("Be concise.\n\nUse bullet points.")
+        );
+        assert_eq!(request.messages.len(), 2);
+        assert_eq!(request.messages[0].role, "user");
+        assert_eq!(request.messages[0].content, "hi");
+        assert_eq!(request.messages[1].role, "assistant");
+        assert_eq!(request.messages[1].content, "ok");
     }
 
     #[test]
