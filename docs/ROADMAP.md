@@ -174,6 +174,17 @@ Run it after any change to capture, encoding, the recorder, or the pipeline.
   the rename itself is not crash-consistent on every filesystem. The
   guarantee that matters — an existing note survives a failed write — holds
   regardless.
-- The end-to-end hardware test has only ever run against a silent microphone
-  (peak amplitude 0.0) and an idle loopback device. Run it once while playing
-  audio and speaking, to prove audible sound reaches the file.
+- The microphone half of the end-to-end test has only ever seen digital
+  silence (peak 0.0), because this machine's default input is a virtual
+  device with nothing routed into it. The loopback half is proven with real
+  audio (see below). Speak into a real microphone and re-run it once before
+  the dogfood gate.
+
+### Evidence from the last hardware run
+
+With a 440 Hz tone playing, the loopback track captured 48056 samples at a
+peak amplitude of 0.1 and the note was written — audible sound demonstrably
+travels the whole path: WASAPI loopback, resampling to 16 kHz mono, Opus
+encoding, decoding back, and into `notes.md`. The same run recorded the
+microphone at peak 0.0, which is this machine's virtual input device having
+no source, not a fault in the capture path.
