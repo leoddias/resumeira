@@ -40,7 +40,7 @@ struct OpusHead {
 /// Parses the `OpusHead` packet (RFC 7845 section 5.1).
 fn parse_opus_head(data: &[u8]) -> Result<OpusHead, AudioError> {
     if data.len() < OPUS_HEAD_MIN_LEN || &data[0..8] != b"OpusHead" {
-        return Err(AudioError::Encode(
+        return Err(AudioError::Decode(
             "not an Ogg Opus stream: first packet is not OpusHead".to_string(),
         ));
     }
@@ -81,13 +81,13 @@ pub fn decode_opus_file(path: &Path) -> Result<Vec<f32>, AudioError> {
     let head_packet = match reader.read_packet() {
         Ok(Some(packet)) => packet,
         Ok(None) => {
-            return Err(AudioError::Encode(format!(
+            return Err(AudioError::Decode(format!(
                 "'{}' is empty: no OpusHead packet found",
                 path.display()
             )));
         }
         Err(e) => {
-            return Err(AudioError::Encode(format!(
+            return Err(AudioError::Decode(format!(
                 "'{}' is not a readable Ogg stream: {e}",
                 path.display()
             )));
@@ -97,7 +97,7 @@ pub fn decode_opus_file(path: &Path) -> Result<Vec<f32>, AudioError> {
     let head = parse_opus_head(&head_packet.data)?;
 
     if head.channels != 1 && head.channels != 2 {
-        return Err(AudioError::Encode(format!(
+        return Err(AudioError::Decode(format!(
             "unsupported Opus channel count: {}",
             head.channels
         )));
@@ -117,7 +117,7 @@ pub fn decode_opus_file(path: &Path) -> Result<Vec<f32>, AudioError> {
             path.display()
         ),
         Ok(None) => {
-            return Err(AudioError::Encode(format!(
+            return Err(AudioError::Decode(format!(
                 "'{}' ends after OpusHead: no audio data",
                 path.display()
             )));
@@ -131,7 +131,7 @@ pub fn decode_opus_file(path: &Path) -> Result<Vec<f32>, AudioError> {
     }
 
     let mut decoder = OpusDecoder::new(TARGET_SAMPLE_RATE, channels_enum)
-        .map_err(|e| AudioError::Encode(format!("failed to create Opus decoder: {e}")))?;
+        .map_err(|e| AudioError::Decode(format!("failed to create Opus decoder: {e}")))?;
 
     let mut samples: Vec<f32> = Vec::new();
     let mut last_granule: u64 = 0;
@@ -189,7 +189,7 @@ pub fn decode_opus_file(path: &Path) -> Result<Vec<f32>, AudioError> {
     }
 
     if samples.is_empty() {
-        return Err(AudioError::Encode(format!(
+        return Err(AudioError::Decode(format!(
             "'{}': no audio decoded",
             path.display()
         )));
@@ -318,7 +318,7 @@ mod tests {
         std::fs::write(&path, []).unwrap();
 
         let result = decode_opus_file(&path);
-        assert!(matches!(result, Err(AudioError::Encode(_))));
+        assert!(matches!(result, Err(AudioError::Decode(_))));
     }
 
     #[test]
@@ -328,7 +328,7 @@ mod tests {
         std::fs::write(&path, b"this is definitely not an ogg stream, just text").unwrap();
 
         let result = decode_opus_file(&path);
-        assert!(matches!(result, Err(AudioError::Encode(_))));
+        assert!(matches!(result, Err(AudioError::Decode(_))));
     }
 
     #[test]

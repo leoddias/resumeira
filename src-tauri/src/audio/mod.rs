@@ -96,7 +96,10 @@ pub enum AudioError {
     #[error("encoder failed: {0}")]
     Encode(String),
 
-    #[error("writing '{path}' failed: {source}")]
+    #[error("decoder failed: {0}")]
+    Decode(String),
+
+    #[error("I/O error on '{path}': {source}")]
     Io {
         path: String,
         #[source]

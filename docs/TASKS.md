@@ -34,7 +34,7 @@ Contract (read-only for all packets): `src-tauri/src/audio/mod.rs` — `Track`,
     with a documented fallback role or removed along with its tests.
   - No `unwrap`/`expect` outside `#[cfg(test)]`.
 - **Review:** conventions+privacy
-- **Status:** running
+- **Status:** merged
 
 ### T-M2-1 — Cloud Whisper clients (Groq + OpenAI)
 - **Goal:** send a meeting's audio to the configured provider and get a
@@ -106,7 +106,7 @@ Contract (read-only for all packets): `src-tauri/src/audio/mod.rs` — `Track`,
     REQUESTING the `audio/mod.rs` edit in your report — that file is
     read-only for packets.
 - **Review:** conventions+privacy
-- **Status:** queued
+- **Status:** merged
 
 ## Orchestrator-owned (not in any packet)
 
