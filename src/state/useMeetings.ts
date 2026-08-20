@@ -16,8 +16,14 @@ export type MeetingsState =
  * to `searchMeetings` so typing does not fire a query per keystroke. Loading
  * and failure are distinct states from `state` — a failed query must never
  * collapse into an empty list, which would look like "you have no meetings".
+ *
+ * `reloadKey` re-runs the current query whenever it changes. A meeting
+ * becomes a note minutes after the recording stops, long after this list
+ * last loaded, and a user watching the screen the whole time would otherwise
+ * see nothing appear — the note is on disk and indexed, but the list has no
+ * reason to ask again.
  */
-export function useMeetings() {
+export function useMeetings(reloadKey = 0) {
   const [query, setQuery] = useState('');
   const [state, setState] = useState<MeetingsState>({ status: 'loading' });
   // Guards against a slow, stale request overwriting a newer one's result.
@@ -39,14 +45,14 @@ export function useMeetings() {
   // Initial load, and the full list whenever the query is cleared.
   useEffect(() => {
     if (query.trim() === '') run(query);
-  }, [query, run]);
+  }, [query, run, reloadKey]);
 
   // Debounced search while the query is non-blank.
   useEffect(() => {
     if (query.trim() === '') return;
     const timer = setTimeout(() => run(query), SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(timer);
-  }, [query, run]);
+  }, [query, run, reloadKey]);
 
   const retry = useCallback(() => run(query), [query, run]);
 

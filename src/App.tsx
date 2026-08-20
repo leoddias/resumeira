@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useReadiness, isBlocked } from './state/useReadiness';
-import { useRecording } from './state/useRecording';
+import { useCompletedPipelines, useRecording } from './state/useRecording';
 import Meetings from './views/Meetings';
 import Note from './views/Note';
 import RecordingBar from './views/RecordingBar';
@@ -13,6 +13,9 @@ export default function App() {
   const { state, start, stop } = useRecording();
   const { state: readiness, recheck } = useReadiness();
   const [view, setView] = useState<View>({ name: 'meetings' });
+  // A note lands minutes after the recording stops, with the user watching a
+  // list that has no reason to ask again.
+  const completed = useCompletedPipelines(state);
 
   // Recording is refused in Rust when the pipeline cannot finish (ADR-0019);
   // this is the same verdict, shown before the click rather than after.
@@ -53,7 +56,7 @@ export default function App() {
       )}
 
       {!showSetup && view.name === 'meetings' && (
-        <Meetings onOpen={(folder) => setView({ name: 'note', folder })} />
+        <Meetings onOpen={(folder) => setView({ name: 'note', folder })} reloadKey={completed} />
       )}
 
       {!showSetup && view.name === 'note' && (

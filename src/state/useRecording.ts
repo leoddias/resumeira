@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   getRecordingState,
   onRecordingState,
@@ -92,6 +92,33 @@ export function useRecording() {
   }, []);
 
   return { state, start, stop };
+}
+
+/**
+ * Counts pipelines that have finished, so the rest of the UI can notice.
+ *
+ * Turning a meeting into a note takes minutes and happens in the background,
+ * so nothing the user did marks the moment it lands. Leaving `processing` is
+ * that moment: the note has just been written and indexed, and any list of
+ * meetings on screen is now out of date.
+ *
+ * Counts failures too. A failed pipeline leaves no new note, and asking for
+ * the list again costs one query — while missing a real one leaves the user
+ * staring at a screen that says they have no meetings.
+ */
+export function useCompletedPipelines(state: RecordingState): number {
+  const [completed, setCompleted] = useState(0);
+  const wasProcessing = useRef(false);
+
+  useEffect(() => {
+    const processing = state.status === 'processing';
+    if (wasProcessing.current && !processing) {
+      setCompleted((count) => count + 1);
+    }
+    wasProcessing.current = processing;
+  }, [state.status]);
+
+  return completed;
 }
 
 function describe(error: unknown): string {

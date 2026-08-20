@@ -4,6 +4,8 @@ import { useMeetings } from '../state/useMeetings';
 interface Props {
   /** Called with a meeting's folder — its stable id — when the user picks one. */
   onOpen: (folder: string) => void;
+  /** Changes when a meeting has just become a note, so the list asks again. */
+  reloadKey?: number;
 }
 
 /**
@@ -13,8 +15,8 @@ interface Props {
  * purpose: this app's whole job is to not lose your meetings, so a failed
  * query must never look like "you have no meetings".
  */
-export default function Meetings({ onOpen }: Props) {
-  const { state, query, setQuery, retry } = useMeetings();
+export default function Meetings({ onOpen, reloadKey }: Props) {
+  const { state, query, setQuery, retry } = useMeetings(reloadKey);
 
   return (
     <div className="meetings">
