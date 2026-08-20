@@ -11,6 +11,7 @@ pub mod index;
 pub mod recorder;
 pub mod secrets;
 pub mod session;
+pub mod settings_commands;
 pub mod storage;
 pub mod summarize;
 pub mod tracks;
@@ -21,13 +22,16 @@ use session::SessionManager;
 use std::path::PathBuf;
 use tauri::Manager;
 
-/// Folder meetings are written into, until Settings makes it configurable.
+/// Folder meetings are written into: the user's choice, or `~/Resumeira`.
 ///
-/// Defaults to `~/Resumeira`; falls back to the current directory rather
-/// than failing to launch, so a machine with no resolvable home still runs.
-fn default_notes_root<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> PathBuf {
+/// Falls back to a relative path rather than failing to launch, so a machine
+/// with no resolvable home still runs.
+fn notes_root<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    settings: &settings_commands::SettingsStore,
+) -> PathBuf {
     match app.path().home_dir() {
-        Ok(home) => home.join("Resumeira"),
+        Ok(home) => settings.get().effective_notes_folder(&home),
         Err(error) => {
             log::warn!("no home directory ({error}); writing meetings next to the app");
             PathBuf::from("Resumeira")
@@ -44,9 +48,21 @@ pub fn run() {
             commands::start_recording,
             commands::stop_recording,
             commands::recording_state,
+            settings_commands::get_settings,
+            settings_commands::save_settings,
+            settings_commands::key_status,
+            settings_commands::set_api_key,
+            settings_commands::delete_api_key,
         ])
         .setup(|app| {
-            let notes_root = default_notes_root(app.handle());
+            let settings = settings_commands::SettingsStore::load_from(
+                settings_commands::settings_path(app.handle()),
+            );
+            let notes_root = notes_root(app.handle(), &settings);
+            app.manage(settings);
+            app.manage(settings_commands::Secrets(Box::new(
+                crate::secrets::OsKeychain,
+            )));
             app.manage(SessionManager::new(
                 notes_root,
                 Box::new(tracks::LiveTrackFactory),
