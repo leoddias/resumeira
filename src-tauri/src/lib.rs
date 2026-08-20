@@ -10,6 +10,7 @@ pub mod config;
 pub mod index;
 pub mod live;
 pub mod meetings_commands;
+pub mod models_commands;
 pub mod pipeline;
 pub mod recorder;
 pub mod secrets;
@@ -84,6 +85,10 @@ pub fn run() {
             meetings_commands::read_meeting,
             meetings_commands::open_meeting_folder,
             meetings_commands::rebuild_index,
+            models_commands::list_models,
+            models_commands::download_model,
+            models_commands::delete_model,
+            models_commands::open_models_folder,
         ])
         .setup(|app| {
             let settings = settings_commands::SettingsStore::load_from(
