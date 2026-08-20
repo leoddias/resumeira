@@ -55,7 +55,7 @@ Contract (read-only for all packets): `src-tauri/src/audio/mod.rs` — `Track`,
     parser handles clean JSON, fenced JSON, JSON with surrounding prose,
     missing owners, empty replies, and outright malformed replies.
 - **Review:** conventions
-- **Status:** queued
+- **Status:** merged
 
 ### T-M3-2 — Chat clients (Anthropic, OpenAI, Groq)
 - **Goal:** send the prompt to the user's chosen provider and return the raw
