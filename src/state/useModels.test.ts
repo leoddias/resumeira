@@ -152,6 +152,24 @@ describe('useModels', () => {
     expect(result.current.load).toEqual({ status: 'ready', models: uninstalled });
   });
 
+  it('reports a delete failure without pretending the model is gone', async () => {
+    listModels.mockResolvedValue(catalogue);
+    deleteModel.mockRejectedValue(new Error('file in use'));
+    const { result } = renderHook(() => useModels());
+    await waitFor(() => expect(result.current.load.status).toBe('ready'));
+
+    await act(async () => {
+      await result.current.remove('large-v3-turbo');
+    });
+
+    expect(result.current.deletes['large-v3-turbo']).toEqual({
+      status: 'failed',
+      error: 'file in use',
+    });
+    // Still installed — a failed delete must not desync the UI from disk.
+    expect(result.current.load).toEqual({ status: 'ready', models: catalogue });
+  });
+
   it('opens the models folder', async () => {
     listModels.mockResolvedValue(catalogue);
     openModelsFolder.mockResolvedValue(undefined);
@@ -163,5 +181,14 @@ describe('useModels', () => {
     });
 
     expect(openModelsFolder).toHaveBeenCalledOnce();
+  });
+
+  it('does not throw when opening the models folder fails', async () => {
+    listModels.mockResolvedValue(catalogue);
+    openModelsFolder.mockRejectedValue(new Error('folder not found'));
+    const { result } = renderHook(() => useModels());
+    await waitFor(() => expect(result.current.load.status).toBe('ready'));
+
+    await expect(result.current.openFolder()).resolves.toBeUndefined();
   });
 });

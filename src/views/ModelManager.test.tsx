@@ -85,6 +85,19 @@ describe('ModelManager', () => {
     await waitFor(() => expect(screen.getByText('Base')).toBeInTheDocument());
   });
 
+  it('shows an empty progress state right when a download starts, before any event arrives', async () => {
+    downloadModel.mockReturnValue(new Promise(() => {}));
+    await renderReady();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Download' }));
+
+    expect(screen.getByRole('progressbar', { name: 'Base download progress' })).toHaveAttribute(
+      'aria-valuenow',
+      '0',
+    );
+    expect(screen.getByText(/0% \(— of —\)/)).toBeInTheDocument();
+  });
+
   it('shows real download progress from the model-progress event, not a spinner', async () => {
     downloadModel.mockReturnValue(new Promise(() => {}));
     await renderReady();
@@ -141,6 +154,17 @@ describe('ModelManager', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Confirm delete' }));
 
     await waitFor(() => expect(deleteModel).toHaveBeenCalledWith('large-v3-turbo'));
+  });
+
+  it('reports a delete failure and leaves the model shown as installed', async () => {
+    deleteModel.mockRejectedValue(new Error('file in use'));
+    await renderReady();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Confirm delete' }));
+
+    await waitFor(() => expect(screen.getByText('Delete failed: file in use')).toBeInTheDocument());
+    expect(screen.getByText('Installed')).toBeInTheDocument();
   });
 
   it('opens the models folder for a manual install', async () => {

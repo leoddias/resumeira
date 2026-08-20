@@ -18,7 +18,10 @@ export type DownloadState =
   | { status: 'downloading'; downloadedBytes: number; totalBytes: number; percent: number }
   | { status: 'failed'; error: string };
 
+export type DeleteState = { status: 'idle' } | { status: 'failed'; error: string };
+
 const IDLE_DOWNLOAD: DownloadState = { status: 'idle' };
+const IDLE_DELETE: DeleteState = { status: 'idle' };
 
 /**
  * Local Whisper model catalogue and downloads, kept separate from the view
@@ -29,6 +32,7 @@ const IDLE_DOWNLOAD: DownloadState = { status: 'idle' };
 export function useModels() {
   const [load, setLoad] = useState<ModelsLoadState>({ status: 'loading' });
   const [downloads, setDownloads] = useState<Record<string, DownloadState>>({});
+  const [deletes, setDeletes] = useState<Record<string, DeleteState>>({});
 
   const refresh = useCallback(async () => {
     setLoad({ status: 'loading' });
@@ -102,15 +106,34 @@ export function useModels() {
 
   const remove = useCallback(
     async (id: string) => {
-      await deleteModelIpc(id);
-      await refresh();
+      setDeletes((previous) => ({ ...previous, [id]: IDLE_DELETE }));
+      try {
+        await deleteModelIpc(id);
+        await refresh();
+      } catch (error: unknown) {
+        // A delete can fail (permission error, file in use) and the model
+        // may still be on disk — say so instead of leaving the click with no
+        // visible effect.
+        setDeletes((previous) => ({
+          ...previous,
+          [id]: { status: 'failed', error: describe(error) },
+        }));
+      }
     },
     [refresh],
   );
 
-  const openFolder = useCallback(() => openModelsFolderIpc(), []);
+  const openFolder = useCallback(async () => {
+    try {
+      await openModelsFolderIpc();
+    } catch {
+      // Opening a file browser window is a convenience, not part of the
+      // download/verify contract — a failure here is not worth surfacing as
+      // an app-level error.
+    }
+  }, []);
 
-  return { load, downloads, download, remove, openFolder, refresh };
+  return { load, downloads, deletes, download, remove, openFolder, refresh };
 }
 
 function describe(error: unknown): string {

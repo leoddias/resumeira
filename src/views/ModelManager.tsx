@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { formatSize, type ModelEntry } from '../ipc/models';
-import { useModels, type DownloadState } from '../state/useModels';
+import { useModels, type DeleteState, type DownloadState } from '../state/useModels';
 
 /**
  * Lets a user install a local Whisper model without knowing what a `.bin`
@@ -11,7 +11,7 @@ import { useModels, type DownloadState } from '../state/useModels';
  * `vi.mock('../ipc/models', ...)`.
  */
 export default function ModelManager() {
-  const { load, downloads, download, remove, openFolder, refresh } = useModels();
+  const { load, downloads, deletes, download, remove, openFolder, refresh } = useModels();
 
   return (
     <div className="model-manager">
@@ -40,6 +40,7 @@ export default function ModelManager() {
               key={model.id}
               model={model}
               downloadState={downloads[model.id] ?? { status: 'idle' }}
+              deleteState={deletes[model.id] ?? { status: 'idle' }}
               onDownload={() => void download(model.id)}
               onDelete={() => void remove(model.id)}
             />
@@ -53,11 +54,12 @@ export default function ModelManager() {
 interface RowProps {
   model: ModelEntry;
   downloadState: DownloadState;
+  deleteState: DeleteState;
   onDownload: () => void;
   onDelete: () => void;
 }
 
-function ModelRow({ model, downloadState, onDownload, onDelete }: RowProps) {
+function ModelRow({ model, downloadState, deleteState, onDownload, onDelete }: RowProps) {
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const downloading = downloadState.status === 'downloading';
 
@@ -94,6 +96,12 @@ function ModelRow({ model, downloadState, onDownload, onDelete }: RowProps) {
       {downloadState.status === 'failed' && (
         <p className="model-manager__download-error" role="alert">
           Download failed: {downloadState.error}
+        </p>
+      )}
+
+      {deleteState.status === 'failed' && (
+        <p className="model-manager__delete-error" role="alert">
+          Delete failed: {deleteState.error}
         </p>
       )}
 
