@@ -9,104 +9,102 @@ Contract (read-only for all packets): `src-tauri/src/audio/mod.rs` — `Track`,
 
 ## In flight
 
-### T-M1-5 — Capture the device's native format, not a forced 16 kHz
-- **Goal:** both ignored hardware tests pass on a real Windows machine, so
-  the recorder actually records.
-- **Owns:** `src-tauri/src/audio/capture/**`
-- **Reads:** `src-tauri/src/audio/mod.rs`, `src-tauri/src/audio/resample.rs`
-- **Context (observed, not hypothetical):** running
-  `cargo test --manifest-path src-tauri/Cargo.toml -- --ignored` fails twice.
-  Loopback: `supported_input_configs()` on the default *output* device
-  reports "device offers no usable input configuration". Microphone: the
-  stream dies immediately with "A buffer underrun or overrun occurred".
-- **Root cause to fix:** we ask the device to produce `TARGET_SAMPLE_RATE`.
-  WASAPI shared mode does not negotiate — it delivers the device's mix
-  format. Capture at the device's native format and let
-  `resample::to_target_mono` convert, which is why that function exists.
-  For loopback the config must come from the *output* side
-  (`default_output_config()`), because WASAPI captures in the render format.
+### T-M2-4 — Local Whisper transcription
+- **Goal:** transcribe a meeting on this machine, with no network at all.
+- **Owns:** `src-tauri/src/transcribe/local.rs`
+- **Reads:** `src-tauri/src/transcribe/{mod,model}.rs`, `src-tauri/src/audio/decoder.rs`
 - **Done when:**
-  - Mic uses `default_input_config()`; system loopback uses
-    `default_output_config()`; neither forces a sample rate.
-  - `cargo test -- --ignored` passes both hardware tests on this machine,
-    with the real output pasted in the report.
-  - Existing hardware-free tests still pass; `select_config` is either kept
-    with a documented fallback role or removed along with its tests.
-  - No `unwrap`/`expect` outside `#[cfg(test)]`.
-- **Review:** conventions+privacy
-- **Status:** merged
-
-### T-M2-1 — Cloud Whisper clients (Groq + OpenAI)
-- **Goal:** send a meeting's audio to the configured provider and get a
-  `Transcript` back, with every failure mode mapped to a `TranscribeError`.
-- **Owns:** `src-tauri/src/transcribe/api.rs`
-- **Reads:** `src-tauri/src/transcribe/mod.rs`, `docs/CONVENTIONS.md`
-- **Done when:**
-  - `pub async fn transcribe(provider, api_key, audio_path, language) -> Result<Transcript, TranscribeError>`
-    posts multipart to the provider's OpenAI-compatible
-    `/audio/transcriptions` with `response_format=verbose_json` so segments
-    and timestamps come back. Groq: `https://api.groq.com/openai/v1`, model
-    `whisper-large-v3`. OpenAI: `https://api.openai.com/v1`, model `whisper-1`.
-  - **The HTTP call and the parsing are separate functions.** Parsing is a
-    pure `fn parse_response(provider, status, retry_after, body) -> Result<Transcript, TranscribeError>`
-    so the whole error surface is testable with no network.
-  - Status mapping: 401/403 → `Unauthorized`, 429 → `RateLimited` with the
-    `Retry-After` header (default when absent, documented), 5xx and malformed
-    bodies → `BadResponse`, transport failure → `Network`.
-  - A file larger than the provider limit (25 MB) fails with a clear
-    `BadResponse` naming the limit — chunking is backlog, not this packet.
-  - The key is never logged, never included in an error, and the request is
-    built so a `Debug` of it cannot print the key.
+  - `pub fn transcribe(model_path, samples: &[f32], language: Option<&str>, on_progress) -> Result<Transcript, TranscribeError>`
+    runs whisper-rs over 16 kHz mono samples and maps its segments onto the
+    contract's `Segment`/`Transcript`, setting `engine: Engine::Local`.
+  - A missing or unreadable model file is `TranscribeError::ModelMissing`,
+    not a panic. whisper-rs failures map to `LocalEngine`.
+  - `language: None` means auto-detect, and the detected language lands in
+    `Transcript::language`.
+  - Progress is reported as a coarse percentage so the UI can move a bar.
+  - Empty or all-silence input yields an empty `Transcript`, never an error
+    and never a hallucinated segment — Whisper invents text on silence, so
+    drop segments whose audio window has no signal, and test that.
+  - Tests run without a model: model-missing, empty input, the segment
+    mapping (given whisper-style values), and language passthrough. Any test
+    needing a real model is `#[ignore]`d with a comment on how to run it.
 - **Review:** conventions+privacy
 - **Status:** queued
 
-### T-M2-2 — Whisper model manager
-- **Goal:** download, verify and locate local Whisper models so the local
-  engine has something to run.
-- **Owns:** `src-tauri/src/transcribe/model.rs`
-- **Reads:** `src-tauri/src/transcribe/mod.rs`, `docs/CONVENTIONS.md`
+### T-M3-1 — Summary prompt and response parsing
+- **Goal:** turn a transcript into the messages we send, and a model reply
+  into a `Summary`.
+- **Owns:** `src-tauri/src/summarize/prompt.rs`, `src-tauri/src/summarize/parse.rs`
+- **Reads:** `src-tauri/src/summarize/mod.rs`, `src-tauri/src/transcribe/mod.rs`
 - **Done when:**
-  - A catalog of models (id, display name, download URL, SHA-256, byte size)
-    including the default `large-v3-turbo` and at least two smaller options
-    for weak machines. Values come from the ggml-org/whisper.cpp Hugging Face
-    repo; if you cannot verify a checksum offline, say so in the report
-    rather than inventing one.
-  - `model_path(models_root, id)`, `is_installed(...)`, and
-    `verify(path, expected_sha256)` (streaming, not read-to-end).
-  - `download(models_root, id, progress)` writes to a temporary file and
-    renames into place **only after** the checksum matches, so an interrupted
-    download can never look installed.
-  - Tests (temp dirs, synthetic files, no network): path building; verify
-    accepts a known-good file and rejects a corrupted one; an interrupted
-    download leaves nothing that `is_installed` accepts; deleting a model
-    targets only the computed path inside the models root.
+  - `prompt::build(transcript, options) -> Vec<ChatMessage>` produces a system
+    prompt and a user message. The prompt asks for a title, ~5 bullets,
+    decisions taken, and action items with owners, and **instructs the model
+    to answer in the language of the transcript** (ADR-0006).
+  - The prompt tells the model to leave an owner absent rather than guess it,
+    and to distinguish decisions actually taken from topics merely discussed.
+  - Requests JSON so parsing is not prose-scraping; define the schema in the
+    prompt and mirror it in `parse`.
+  - `parse::parse_summary(provider, model, body) -> Result<Summary, SummarizeError>`
+    is pure and tolerant of the drift real models produce: fenced ```json
+    blocks, prose before or after the JSON, missing optional fields, a
+    single-string field where a list was asked for.
+  - A reply with no usable content is `SummarizeError::EmptySummary`, never a
+    hollow note (`Summary::is_usable` exists for this).
+  - Tests: the prompt names the language rule and the no-guessing rule; the
+    parser handles clean JSON, fenced JSON, JSON with surrounding prose,
+    missing owners, empty replies, and outright malformed replies.
+- **Review:** conventions
+- **Status:** queued
+
+### T-M3-2 — Chat clients (Anthropic, OpenAI, Groq)
+- **Goal:** send the prompt to the user's chosen provider and return the raw
+  reply text.
+- **Owns:** `src-tauri/src/summarize/providers.rs`
+- **Reads:** `src-tauri/src/summarize/mod.rs`
+- **Done when:**
+  - `pub async fn complete(provider, api_key, model, messages) -> Result<String, SummarizeError>`
+    speaks each provider's chat API: Anthropic `/v1/messages` (with the
+    `anthropic-version` header and the system prompt as a top-level field),
+    OpenAI and Groq `/v1/chat/completions`.
+  - **The HTTP call and the response handling are separate functions**, so
+    every status and body shape is testable with no network — same split as
+    `transcribe/api.rs`, which you should read first and mirror.
+  - Status mapping: 401/403 → `Unauthorized`, 429 → `RateLimited` honouring
+    `Retry-After`, context-length errors → `TooLong`, other 4xx/5xx and
+    malformed bodies → `BadResponse`, transport failure → `Network`.
+  - The key never appears in a log, an error, or any `Debug` output.
+  - Use the model ids from `SummaryProvider::default_model()` when the caller
+    passes none. If a default looks wrong to you, report it — do not silently
+    substitute another.
 - **Review:** conventions+privacy
 - **Status:** queued
 
-### T-M2-3 — Ogg/Opus decoder
-- **Goal:** read a recorded track back into 16 kHz mono samples, so local
-  transcription has PCM to work with. (Found while planning M2: we encode
-  Opus but nothing decodes it.)
-- **Owns:** `src-tauri/src/audio/decoder.rs`
-- **Reads:** `src-tauri/src/audio/mod.rs`, `src-tauri/src/audio/encoder.rs`
+### T-M3-3 — Note storage and the search index
+- **Goal:** a meeting on disk as a Markdown note the user owns, plus a
+  rebuildable index that makes listing and search fast.
+- **Owns:** `src-tauri/src/storage.rs`, `src-tauri/src/index.rs`
+- **Reads:** `src-tauri/src/summarize/mod.rs`, `src-tauri/src/transcribe/mod.rs`,
+  `src-tauri/src/recorder.rs`
 - **Done when:**
-  - `pub fn decode_opus_file(path: &Path) -> Result<Vec<f32>, AudioError>`
-    reads the Ogg stream, decodes Opus packets, honours the `OpusHead`
-    pre-skip, and returns mono samples at `TARGET_SAMPLE_RATE`.
-  - Uses the `ogg` and `opus` crates already in `Cargo.toml`.
-  - A truncated or corrupt file returns the samples decoded so far plus a
-    logged warning, or an error if nothing decoded — never a panic. A
-    recording that ended in a crash must still be transcribable.
-  - Tests: **round-trip against `encoder::OpusTrackWriter`** — encode a known
-    signal, decode it back, and assert the sample count and that the signal
-    correlates with the original (Opus is lossy, so assert similarity, not
-    equality; state the tolerance). Plus: a file truncated mid-page; a file
-    that is not Ogg at all; an empty file.
-  - You may add `src-tauri/src/audio/decoder.rs` to the module list only by
-    REQUESTING the `audio/mod.rs` edit in your report — that file is
-    read-only for packets.
+  - `storage::write_note(folder, &Summary, &Transcript) -> Result<PathBuf, ...>`
+    writes `notes.md`: the summary first, then a divider, then the full
+    transcript (ADR-0007). It states which engine and model produced it.
+  - `storage::read_note(folder)` parses that file back into its parts, so the
+    index can be rebuilt from disk alone.
+  - The note is written atomically (temp file then rename): a crash must
+    never leave a half-written note where a good one was.
+  - `index::open(db_path)` creates the schema; `upsert`, `list` (newest
+    first), `search` (full text over title, summary and transcript), and
+    **`rebuild_from_disk(notes_root)`** which is the recovery path — losing
+    the database must never lose a note.
+  - The index write always follows a successful file write, never precedes it.
+  - Tests on temp dirs: round-trip write/read; a note with unicode, emoji and
+    newlines in the title; atomic write leaves the old note intact when the
+    write fails; list ordering; search hits in title and in transcript;
+    rebuild reconstructs an index deleted mid-life.
 - **Review:** conventions+privacy
-- **Status:** merged
+- **Status:** queued
 
 ## Orchestrator-owned (not in any packet)
 
