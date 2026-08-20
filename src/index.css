@@ -39,3 +39,71 @@ body {
 .status {
   color: var(--muted);
 }
+
+.recording-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  padding: 0.75rem 1rem;
+  margin-bottom: 2rem;
+  border: 1px solid #2a2b33;
+  border-radius: 8px;
+}
+
+.dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--muted);
+  flex: none;
+}
+
+.dot--live {
+  background: var(--accent);
+  box-shadow: 0 0 0 4px rgb(217 83 79 / 25%);
+}
+
+.recording-bar__elapsed {
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.recording-bar__tracks {
+  display: flex;
+  gap: 0.75rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+.track--stopped {
+  text-decoration: line-through;
+}
+
+.track__error {
+  text-decoration: none;
+  color: var(--accent);
+}
+
+.recording-bar__actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-left: auto;
+}
+
+.recording-bar__actions button {
+  padding: 0.4rem 0.8rem;
+  border: 1px solid #35363f;
+  border-radius: 6px;
+  background: #1d1e25;
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.recording-bar__actions button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
