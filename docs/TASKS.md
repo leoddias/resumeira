@@ -82,7 +82,7 @@ Contract (read-only for all packets): `src-tauri/src/audio/mod.rs` — `Track`,
     saying how to run it manually — but the packet is not done on ignored
     tests alone.
 - **Review:** conventions+privacy
-- **Status:** running
+- **Status:** merged
 
 ### T-M1-4 — Recording session
 - **Goal:** one call starts a meeting recording, one call ends it, and both

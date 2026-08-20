@@ -17,8 +17,8 @@ never the privacy rules or the test bar.
 - [x] README: setup, dev + build scripts, permissions, data locations
 
 ### M1 — Recording core
-- [ ] Mic capture via cpal → f32 frames (device selection, error surfacing)
-- [ ] System capture via WASAPI loopback, behind a `SystemCapture` trait with
+- [x] Mic capture via cpal → f32 frames (device selection, error surfacing)
+- [x] System capture via WASAPI loopback, behind a `SystemCapture` trait with
       non-Windows stubs
 - [x] Resample any input to 16 kHz mono (unit tests on synthetic buffers)
 - [ ] Opus encoder writing `.opus` incrementally (unit tests: header, flush,
@@ -93,6 +93,12 @@ tool, stop investing.
 - i18n of the UI (pt-BR first)
 - Search across transcripts with semantic ranking
 - Per-meeting audio bookmarks / clip extraction
+- **A running `CaptureSource` has no error channel back to the session.** A
+  device disconnected mid-meeting can only be logged from cpal's error
+  callback, so the UI keeps showing that track as live. Needs either a
+  chunk-liveness timeout or an ADR adding an error path to the trait —
+  decide before the dogfood gate, since "my headphones died and Resumeira
+  said it was still recording" is a trust-breaking bug.
 - Band-limited (sinc) resampling — M1's linear interpolation has no
   anti-aliasing filter; fine for speech into Whisper, revisit if audio is
   ever reused for anything else
