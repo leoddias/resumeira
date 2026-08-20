@@ -164,6 +164,25 @@ impl SessionManager {
         }
     }
 
+    /// Whether a recording is running with every track dead.
+    ///
+    /// Nothing more will be captured, so continuing to display "Recording"
+    /// would be a lie. The caller ends the meeting properly rather than
+    /// having this getter do it, so the captured audio still goes through
+    /// the note pipeline.
+    pub fn all_tracks_dead(&self) -> bool {
+        let Ok(inner) = self.inner.lock() else {
+            return false;
+        };
+        match (&inner.state, &inner.session) {
+            (RecordingState::Recording { .. }, Some(session)) => {
+                let liveness = session.track_liveness();
+                !liveness.is_empty() && !liveness.iter().any(|track| track.live)
+            }
+            _ => false,
+        }
+    }
+
     /// Starts a meeting. Returns the state the app moved to, which is a
     /// `Failed` state rather than an `Err` when starting did not work — the
     /// UI renders states, not exceptions.
@@ -201,18 +220,39 @@ impl SessionManager {
 
         match RecordingSession::start(&folder_root, specs, converter) {
             Ok(session) => {
+                // Seeded from what actually started, not from optimism: a
+                // device that failed to open must show dead from the first
+                // frame, not two seconds later when the UI next asks.
+                let liveness = session.track_liveness();
+                let tracks: Vec<TrackStatus> = device_names
+                    .into_iter()
+                    .map(|(track, device_name)| {
+                        let current = liveness.iter().find(|l| l.track == track);
+                        TrackStatus {
+                            track,
+                            device_name,
+                            live: current.map(|l| l.live).unwrap_or(false),
+                            error: current.and_then(|l| l.error.clone()),
+                        }
+                    })
+                    .collect();
+
+                if !tracks.iter().any(|track| track.live) {
+                    // Nothing is being captured. Saying "Recording" here,
+                    // with a ticking clock, is the single most damaging lie
+                    // this app can tell: the user walks away believing the
+                    // meeting is being saved.
+                    let reason = tracks
+                        .iter()
+                        .find_map(|track| track.error.clone())
+                        .unwrap_or_else(|| "no audio device could be opened".to_owned());
+                    return inner.fail(reason);
+                }
+
                 inner.session = Some(session);
                 inner.state = RecordingState::Recording {
                     started_at: now_ms,
-                    tracks: device_names
-                        .into_iter()
-                        .map(|(track, device_name)| TrackStatus {
-                            track,
-                            device_name,
-                            live: true,
-                            error: None,
-                        })
-                        .collect(),
+                    tracks,
                 };
                 inner.state.clone()
             }

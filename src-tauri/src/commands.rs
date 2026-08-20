@@ -6,7 +6,7 @@
 
 use crate::session::{ProcessingStage, RecordingState, SessionManager};
 use crate::tray;
-use tauri::{AppHandle, Emitter, Manager, Runtime, State};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 /// Event the frontend listens on. Mirrors `RECORDING_STATE_EVENT` in
 /// `src/ipc/types.ts`.
@@ -174,7 +174,20 @@ pub fn stop_recording<R: Runtime>(app: AppHandle<R>) -> RecordingState {
 }
 
 #[tauri::command]
-pub fn recording_state(manager: State<'_, SessionManager>) -> RecordingState {
+pub fn recording_state<R: Runtime>(app: AppHandle<R>) -> RecordingState {
+    let Some(manager) = app.try_state::<SessionManager>() else {
+        return unavailable();
+    };
+
+    // The UI asks for this every couple of seconds while recording, which
+    // makes it the natural place to notice that every device has died. Ending
+    // the meeting here rather than letting it appear to run means the audio
+    // captured before the failure still becomes a note.
+    if manager.all_tracks_dead() {
+        log::warn!("every track died mid-recording; ending the meeting");
+        return stop(&app);
+    }
+
     manager.state()
 }
 

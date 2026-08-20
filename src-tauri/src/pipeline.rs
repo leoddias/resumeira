@@ -86,6 +86,7 @@ where
     on_stage(Stage::Transcribing);
 
     let mut parts = Vec::new();
+    let mut failure: Option<TranscribeError> = None;
     for track in Track::all() {
         let audio = folder.join(format!("{}.opus", track.file_stem()));
         if !audio.is_file() {
@@ -98,13 +99,24 @@ where
             Err(error) => {
                 // A track that fails to transcribe must not cost the other
                 // one — a note from half the meeting beats no note at all.
+                // But the reason is kept: if *nothing* transcribes, the user
+                // needs to hear "your key was rejected", not a guess about
+                // their microphone.
                 log::warn!("could not transcribe the {track:?} track: {error}");
+                failure.get_or_insert(error);
             }
         }
     }
 
     let Some(transcript) = Transcript::merge(parts) else {
-        return Err(PipelineError::NoAudio);
+        // Report why transcription failed when it did. `NoAudio` is reserved
+        // for the case where there was genuinely nothing to transcribe —
+        // telling someone their meeting was silent when their API key was
+        // rejected sends them to fix the wrong thing.
+        return Err(match failure {
+            Some(error) => PipelineError::Transcribe(error),
+            None => PipelineError::NoAudio,
+        });
     };
     if transcript.is_empty() {
         // Nobody spoke. Sending this to a model costs money and invents
@@ -169,6 +181,8 @@ mod tests {
     struct FakeTranscriber {
         /// Text to return per track; a track absent here fails.
         answers: Vec<(Track, &'static str)>,
+        /// Error every track fails with, when set.
+        rejection: Option<TranscribeError>,
         seen: Mutex<Vec<Track>>,
     }
 
@@ -176,6 +190,16 @@ mod tests {
         fn new(answers: Vec<(Track, &'static str)>) -> Self {
             Self {
                 answers,
+                rejection: None,
+                seen: Mutex::new(Vec::new()),
+            }
+        }
+
+        /// Fails every track with the same error, as a bad key would.
+        fn rejecting(error: TranscribeError) -> Self {
+            Self {
+                answers: Vec::new(),
+                rejection: Some(error),
                 seen: Mutex::new(Vec::new()),
             }
         }
@@ -188,6 +212,14 @@ mod tests {
             _audio: &Path,
         ) -> Result<Transcript, TranscribeError> {
             self.seen.lock().expect("lock").push(track);
+            if let Some(rejection) = &self.rejection {
+                return Err(match rejection {
+                    TranscribeError::Unauthorized { provider } => {
+                        TranscribeError::Unauthorized { provider }
+                    }
+                    other => TranscribeError::LocalEngine(other.to_string()),
+                });
+            }
             let Some((_, text)) = self.answers.iter().find(|(t, _)| *t == track) else {
                 return Err(TranscribeError::LocalEngine("fake failure".to_owned()));
             };
@@ -327,6 +359,58 @@ mod tests {
 
         let outcome = result.expect("half a meeting still beats no note");
         assert_eq!(outcome.transcript.to_plain_text(), "my line");
+    }
+
+    #[tokio::test]
+    async fn a_rejected_key_is_reported_as_a_rejected_key() {
+        // The worst failure this pipeline can produce is not silence — it is
+        // telling the user their microphone failed when their API key was
+        // refused, sending them to fix the wrong thing.
+        let dir = tempfile::tempdir().expect("temp dir");
+        write_track(dir.path(), Track::Mic);
+        write_track(dir.path(), Track::System);
+
+        let transcriber =
+            FakeTranscriber::rejecting(TranscribeError::Unauthorized { provider: "groq" });
+        let (result, _) = run(
+            dir.path(),
+            &transcriber,
+            &FakeSummarizer { fail: false },
+            AudioRetention::Keep,
+        )
+        .await;
+
+        let error = result.expect_err("a rejected key must fail the pipeline");
+        assert!(
+            matches!(
+                error,
+                PipelineError::Transcribe(TranscribeError::Unauthorized { .. })
+            ),
+            "expected the real reason, got {error}"
+        );
+        assert!(
+            error.to_string().contains("rejected the key"),
+            "the user must see what to fix, got '{error}'"
+        );
+    }
+
+    #[tokio::test]
+    async fn one_track_failing_still_reports_nothing_when_the_other_succeeds() {
+        // The error is only surfaced when it explains an empty result.
+        let dir = tempfile::tempdir().expect("temp dir");
+        write_track(dir.path(), Track::Mic);
+        write_track(dir.path(), Track::System);
+
+        let transcriber = FakeTranscriber::new(vec![(Track::Mic, "my line")]);
+        let (result, _) = run(
+            dir.path(),
+            &transcriber,
+            &FakeSummarizer { fail: false },
+            AudioRetention::Keep,
+        )
+        .await;
+
+        assert!(result.is_ok(), "half a meeting still beats no note");
     }
 
     #[tokio::test]
