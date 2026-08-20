@@ -102,18 +102,10 @@ tool, stop investing.
 - Band-limited (sinc) resampling — M1's linear interpolation has no
   anti-aliasing filter; fine for speech into Whisper, revisit if audio is
   ever reused for anything else
-- Model download: drive `download()` end-to-end in the happy-path test (needs
-  an injectable catalog/URL seam), and remove a dangling symlink at a model's
-  final path instead of no-opping on delete
 - Transcription: chunk audio over the provider's 25 MB limit instead of
   refusing it
 - When the Tauri command wiring lands, keep audio paths built from generated
   ids, never from a user-typed meeting title, so a title cannot reach a log
-- `storage::write_note` does not `sync_all()` before the rename, so a hard
-  power loss (not a process crash) could lose a brand-new note; the existing
-  note's safety is unaffected and tested
-- `index::search` uses `LIKE` rather than SQLite FTS5 — no ranking or
-  tokenizing; revisit with an FTS5 feature flag if search quality matters
 
 ## Manual step: enabling auto-update
 
@@ -167,3 +159,21 @@ opened one directory above the meeting folder so every meeting reported "no
 audio was recorded". None of the three was visible to a green suite.
 
 Run it after any change to capture, encoding, the recorder, or the pipeline.
+
+## Backlog found while hardening (2026-08-20)
+
+- **Deleting a meeting has no index path.** `index.rs` can add and rebuild but
+  cannot remove a single note, and content now lives in two tables (`notes`
+  and `notes_fts`). Whatever adds "delete a meeting" must clear both, or a
+  deleted meeting's transcript lingers in `index.sqlite` after the user
+  believes it is gone — a privacy problem, not just a tidiness one.
+- `index.sqlite` now holds meeting text twice (the table and its FTS5 mirror).
+  Worth a line in ADR-0007 for anyone reasoning about where content sits on
+  disk, especially when answering "what do I delete to erase a meeting?".
+- `write_note` fsyncs the note's bytes but not the parent directory entry, so
+  the rename itself is not crash-consistent on every filesystem. The
+  guarantee that matters — an existing note survives a failed write — holds
+  regardless.
+- The end-to-end hardware test has only ever run against a silent microphone
+  (peak amplitude 0.0) and an idle loopback device. Run it once while playing
+  audio and speaking, to prove audible sound reaches the file.
