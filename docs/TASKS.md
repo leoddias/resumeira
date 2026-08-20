@@ -7,57 +7,52 @@ Contract (read-only for all packets): `src-tauri/src/audio/mod.rs` — `Track`,
 `AudioChunk`, `AudioError`, `CaptureSource`, `TrackWriter`, `ChunkConverter`,
 `TARGET_SAMPLE_RATE`. Do not modify it; if it is wrong, report and stop.
 
-## In flight — M5 (polish and distribution)
+## In flight — M5 (making it usable by a stranger)
 
-### T-M5-1 — Release workflow and auto-update
-- **Goal:** a tester downloads one installer and then receives fixes without
-  being told to download anything again.
-- **Owns:** `.github/workflows/release.yml`
-- **Reads:** `.github/workflows/ci.yml`, `src-tauri/tauri.conf.json`,
-  `src-tauri/Cargo.toml`, `package.json`
+### T-M5-3 — Whisper model manager UI
+- **Goal:** a user can install a local model without knowing what a `.bin`
+  file is. Without this the local engine — the product's privacy promise —
+  is reachable only by the author.
+- **Owns:** `src/views/ModelManager.tsx`, `src/state/useModels.ts`
+- **Reads:** `src/ipc/models.ts` (the contract), `src/views/RecordingBar.tsx`
+  for the project's component/hook pattern
 - **Done when:**
-  - A tag push (`v*`) builds the Windows installer and publishes a GitHub
-    Release with the updater artifacts attached.
-  - `tauri-plugin-updater` is configured against that release feed. The
-    plugin, its `Cargo.toml` entry, the `tauri.conf.json` block and the
-    capability permission are **requested edits** in your report — those
-    files are orchestrator-owned. Give their exact content.
-  - The build is unsigned for now (ADR-0014). Say in the report exactly what
-    a tester will see on first launch because of that, so the README can be
-    accurate.
-  - Signing keys are never committed. The updater's public key belongs in
-    `tauri.conf.json`; the private key is a repository secret, and your
-    report must state which secret names the workflow expects.
-  - You cannot run this workflow here, so do not claim it passes. Verify what
-    you can (YAML parses, action versions exist, commands match the ones in
-    `ci.yml` that do run) and say plainly what remains unverified.
+  - Lists every catalogue model with its display name, size (`formatSize`)
+    and whether it is installed.
+  - Download shows real progress from the `model-progress` event, which
+    matters: `large-v3-turbo` is ~1.6 GB and a UI that just says "please
+    wait" for ten minutes reads as frozen.
+  - Download failure is reported with its reason and the model stays
+    uninstalled — a half-downloaded model must never look ready.
+  - Delete asks for confirmation first; re-downloading 1.6 GB after a misclick
+    is a genuine cost.
+  - An "open models folder" action, for anyone who would rather place the
+    file by hand.
+  - Loading, empty-progress, downloading, failed and installed states are
+    tested with `vi.mock('../ipc/models', ...)`. Never call Tauri in a test.
 - **Review:** conventions
 - **Status:** queued
 
-### T-M5-2 — README for a stranger installing this
-- **Goal:** someone who is not the author can install Resumeira, grant the
-  right permissions, and understand exactly what leaves their machine.
-- **Owns:** `README.md`
-- **Reads:** `PLAN.md`, `docs/DECISIONS.md`, `docs/ROADMAP.md`,
-  `src-tauri/src/config.rs`, `src-tauri/src/secrets.rs`, and the source
-  generally — every claim must be checked against the code.
+### T-M5-4 — First-run onboarding
+- **Goal:** the first launch tells a stranger what to do, instead of showing
+  an empty list and a tray icon.
+- **Owns:** `src/views/FirstRun.tsx`, `src/state/useFirstRun.ts`
+- **Reads:** `src/ipc/settings.ts`, `src/ipc/models.ts`, `src/ipc/meetings.ts`
 - **Done when:**
-  - Install and first-run instructions for Windows, including the SmartScreen
-    warning an unsigned build produces and what to click.
-  - The permissions section is accurate: what Windows asks for, when, and why.
-  - A data-locations table (notes, settings, index, models, keys) matching
-    what `config.rs`, `secrets.rs` and `lib.rs` actually do — read them, do
-    not copy the current README, which predates most of the code.
-  - A **network activity** section listing every request the app can make,
-    verified against the source. The current README claims a list is
-    exhaustive; make that claim true or correct it.
-  - A telemetry statement (ADR-0010) and a plain statement of what is not
-    built yet, so nobody installs it expecting macOS or live transcription.
-  - Development instructions matching the real commands, including the CMake
-    and MSVC prerequisites the audio stack needs (ADR-0015/0016).
-  - **Any claim you cannot verify in the source is removed rather than
-    softened.** A privacy promise that is not true in code is the worst
-    possible line in this file.
+  - Shows only when there are no meetings **and** nothing has been configured
+    (no key stored and no local model installed) — a returning user must
+    never see it again, and there is a test for that.
+  - Explains, in three short steps: where notes will be saved, that recording
+    starts from the tray, and that a transcription engine must be chosen —
+    either a local model to download or an API key to paste.
+  - **States plainly that summaries always call a cloud LLM with the user's
+    own key**, because there is no local summarizer. Someone who installed
+    this believing nothing ever leaves their machine must learn it here, not
+    after their first meeting.
+  - Mentions that Windows will ask for microphone permission when the first
+    recording starts, so the prompt is not a surprise.
+  - Offers a "skip" that dismisses it without configuring anything.
+  - Tested with the IPC modules stubbed.
 - **Review:** conventions
 - **Status:** queued
 
