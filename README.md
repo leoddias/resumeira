@@ -8,19 +8,16 @@ It is designed for in-person, hybrid, and fully remote meetings — no bot
 joins your call, and nothing leaves your machine except through a path you
 explicitly configured.
 
-> **Status: early, Windows only, recording works, transcription/summarization
-> do not run automatically yet.** Starting and stopping a recording from the
-> tray or the window works end to end and saves two Opus audio tracks
-> (`mic.opus`, `system.opus`) to disk. The transcription engines (cloud
-> Whisper via Groq/OpenAI, local via whisper-rs), the summarization clients
-> (Anthropic/OpenAI/Groq), the prompt/response handling, and the note/index
-> storage all exist as working, unit-tested Rust modules — but nothing in the
-> shipped app calls them yet: stopping a recording does not currently produce
-> a transcript or a `notes.md`. That wiring is the next milestone
-> (`docs/PROGRESS.md`, `docs/ROADMAP.md` M2/M3). There is also no packaged
-> release to download, the eventual build will be unsigned, macOS/Linux are
-> not supported, and live/streaming transcription does not exist — see
-> [What is not built yet](#what-is-not-built-yet).
+> **Status: pre-release, Windows only, and never yet used for a real
+> meeting.** The whole path is wired: stopping a recording saves two Opus
+> tracks, then transcription, summarization, note writing and indexing run in
+> the background. Every part is covered by unit tests, and microphone and
+> loopback capture are verified against real hardware — but nobody has sat
+> through an actual meeting with it and read the note that came out. Until
+> that happens, treat any claim about note *quality* as untested. There is
+> also no packaged release to download, the eventual build will be unsigned,
+> macOS/Linux are not supported, and live/streaming transcription does not
+> exist — see [What is not built yet](#what-is-not-built-yet).
 
 ## Why it exists
 
@@ -33,19 +30,18 @@ transcribe entirely offline.
 - **No telemetry.** Off by default. An explicit opt-in for anonymous crash
   reports may be added later, and if it is, the exact payload will be
   documented here — nothing is sent without your consent today.
-- **Your files.** Notes are designed to be Markdown in a folder you choose —
-  open them in Obsidian, grep them, back them up by copying the folder. (The
-  note writer exists and is tested; it is not yet triggered automatically
-  after a recording — see the status note above.)
-- **Transcription engine is a deliberate choice, not built-in cloud-first.**
-  The routing logic and both clients (a downloaded local Whisper model, or
-  Groq/OpenAI with your own key) exist and are tested to have no implicit
-  cloud fallback. They are not yet reachable from the running app.
-- **Summarization is BYOK, and will always be cloud for now.** There is no
-  local summarization engine (a local option via Ollama is on the backlog,
-  not built), so once this is wired up, every meeting's transcript will be
-  sent to whichever LLM provider (Anthropic, OpenAI, or Groq) you configure,
-  using your own API key.
+- **Your files.** Notes are Markdown in a folder you choose — open them in
+  Obsidian, grep them, back them up by copying the folder. The database is
+  only a search index and can be rebuilt from those files.
+- **Transcription engine is a deliberate choice, not cloud-first.** You pick
+  a downloaded local Whisper model or Groq/OpenAI with your own key, and
+  there is no implicit fallback in either direction: a missing local model is
+  an error you see, never a silent upload.
+- **Summarization is BYOK, and is always cloud for now.** There is no local
+  summarization engine (a local option via Ollama is on the backlog), so
+  every meeting you summarize sends its transcript to whichever LLM provider
+  you configure, using your own API key. If that is not acceptable to you,
+  this app cannot yet write your notes.
 
 ## Requirements
 
@@ -117,35 +113,24 @@ Windows both the config and data directories resolve under `%APPDATA%`.
 
 | What | Where |
 |---|---|
-| Recorded audio (and, once wired, notes) | `<notes folder>/YYYY-MM-DD-HHMM/` — today holds `mic.opus` and `system.opus`; the writer for `notes.md` next to them exists but is not yet called after a recording stops. Default notes folder is `~/Resumeira`, configurable in Settings. A same-minute collision gets a `-2`, `-3`, ... suffix; a meeting title is never part of the folder or file name, only of `notes.md`'s own content |
+| Notes and recorded audio | `<notes folder>/YYYY-MM-DD-HHMM/` holding `notes.md`, `mic.opus` and `system.opus`. Default notes folder is `~/Resumeira`, configurable in Settings. A same-minute collision gets a `-2`, `-3`, ... suffix; a meeting title is never part of a folder or file name, only of `notes.md`'s own content |
 | Settings | `%APPDATA%\dev.resumeira.app\config.json` — plain JSON, no secrets, safe to open or attach to a bug report |
 | Search index | `%APPDATA%\dev.resumeira.app\index.sqlite` (rebuildable from the notes on disk — delete it safely) |
+| Whisper models | `%APPDATA%\dev.resumeira.app\models\` — downloaded on request, verified by SHA-256 before use |
 | API keys | Windows Credential Manager, service name `resumeira` (never written to a file, never returned to the app's UI, never logged) |
 
 Backup = copy the notes folder. There is nothing else to export.
 
-Audio retention is configurable in Settings (default: keep `mic.opus`/
-`system.opus` after transcription, or delete them once a transcript exists).
-The setting is stored and tested, but has no observable effect yet, since
-nothing currently deletes audio after a recording — see the status note
-above.
-
-Downloaded local Whisper models will need a location once the local
-transcription engine is wired up; no code path in this build currently
-resolves or writes to one, so no location is listed here yet.
+Audio retention is configurable in Settings: keep the tracks (the default),
+or delete them once a transcript exists. Deletion happens only after the note
+has been written successfully, so a failed summary can never leave you with
+neither a note nor the audio.
 
 ## Network activity
 
-**As shipped today, the running app makes zero network requests.** Recording
-audio, browsing the meetings list, and managing settings and API keys all
-happen without a network call. That is a consequence of the transcription and
-summarization pipeline not being wired up yet (see the status note above),
-not a policy the app enforces once it is.
-
-The Rust modules for cloud calls exist, are unit-tested against recorded
-fixtures, and will run once integrated. Every outbound request the code is
-capable of making is one of these three, so this is the complete list to
-audit as the pipeline gets wired in:
+Recording audio, browsing your meetings, and managing settings and API keys
+all happen without a single network call. Every outbound request the app can
+make is one of these three:
 
 1. **Cloud transcription** — sending the meeting's audio to `api.groq.com` or
    `api.openai.com`'s Whisper endpoint, with your key in the request header,
@@ -153,12 +138,12 @@ audit as the pipeline gets wired in:
 2. **Cloud summarization** — sending a meeting's transcript to whichever
    summary provider you configured (`api.anthropic.com`, `api.openai.com`, or
    `api.groq.com`), with your key in the request header. There is no local
-   summarization engine, so once wired up this call will happen for every
-   meeting, not only when you pick the cloud transcription engine.
+   summarization engine, so this happens for every meeting you summarize, not
+   only when you pick the cloud transcription engine.
 3. **Whisper model download** — downloading the selected local model (`tiny`
    through `large-v3-turbo`, up to ~1.6 GB) from
    `huggingface.co/ggerganov/whisper.cpp`, verified by SHA-256 before use,
-   only when you choose the local transcription engine.
+   only when you ask for that model in Settings.
 
 There is no updater and no telemetry endpoint anywhere in the source. If you
 find a fourth kind of outbound request, or find that one of the three above
@@ -168,16 +153,14 @@ implemented yet; this section will be updated when it ships.)
 
 ## What is not built yet
 
-- **Stopping a recording does not produce a note.** Transcription,
-  summarization, and note writing exist as tested library code but are not
-  yet called after a recording stops; today a recording leaves you with
-  `mic.opus`/`system.opus` and nothing else. This is the current top-of-list
-  work (`docs/PROGRESS.md`).
+- **Nobody has used this for a real meeting yet.** Every part is unit-tested
+  and capture is verified against real hardware, but the end-to-end question
+  — is the note actually worth reading? — is unproven.
 - macOS and Linux support (Windows only today)
-- Live/streaming transcription — once wired up, transcription and
-  summarization will run after you stop recording, not during the meeting
-- Local (offline) summarization — summarization will always call a cloud LLM
-  once wired up (see [Network activity](#network-activity))
+- Live/streaming transcription — transcription and summarization run after
+  you stop recording, not during the meeting
+- Local (offline) summarization — summarization always calls a cloud LLM
+  (see [Network activity](#network-activity))
 - A signed installer — the eventual build will be unsigned; expect a
   SmartScreen warning
 - An auto-updater and a published release to download
