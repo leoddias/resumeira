@@ -20,7 +20,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use super::{SummarizeError, SummaryProvider};
+use super::{ChatMessage, ChatRole, SummarizeError, SummaryProvider};
 
 /// How long a single chat completion request may run before it is cancelled.
 /// Generous enough for a slow model on a long transcript, short enough that
@@ -40,26 +40,6 @@ const ANTHROPIC_VERSION: &str = "2023-06-01";
 /// which default it server-side). A structured summary — title, ~5 bullets,
 /// decisions, action items — comfortably fits well under this ceiling.
 const ANTHROPIC_MAX_TOKENS: u32 = 8192;
-
-/// One turn in the conversation sent to a provider.
-///
-/// Defined here rather than imported from `prompt.rs`: that module is owned
-/// by a different worker in this fan-out (docs/TASKS.md T-M3-2) and its
-/// types are not a settled contract at the time this module was written. If
-/// `prompt::build`'s output type ends up incompatible with this one, the
-/// orchestrator reconciles the two.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ChatMessage {
-    pub role: ChatRole,
-    pub content: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ChatRole {
-    System,
-    User,
-    Assistant,
-}
 
 fn endpoint(provider: SummaryProvider) -> &'static str {
     match provider {

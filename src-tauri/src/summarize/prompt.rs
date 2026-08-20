@@ -12,24 +12,8 @@
 //! packet running concurrently (T-M3-2); the orchestrator reconciles the two
 //! shapes at integration time if they disagree.
 
+use super::{ChatMessage, ChatRole};
 use crate::transcribe::Transcript;
-use serde::{Deserialize, Serialize};
-
-/// Chat role, mirroring the `role` field every chat-completions-style API
-/// expects (Anthropic, OpenAI, Groq).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ChatRole {
-    System,
-    User,
-}
-
-/// One message in a chat request.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ChatMessage {
-    pub role: ChatRole,
-    pub content: String,
-}
 
 /// Knobs a caller can set for a specific summarization request.
 ///

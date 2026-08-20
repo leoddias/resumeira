@@ -43,6 +43,26 @@ impl SummaryProvider {
     }
 }
 
+/// Chat role, mirroring the `role` field every chat-completions-style API
+/// expects (Anthropic, OpenAI, Groq).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ChatRole {
+    System,
+    User,
+    Assistant,
+}
+
+/// One turn in the conversation sent to a provider.
+///
+/// Lives here rather than in `prompt` or `providers` because both need it:
+/// `prompt::build` produces these and `providers::complete` consumes them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatMessage {
+    pub role: ChatRole,
+    pub content: String,
+}
+
 /// Something someone agreed to do.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
