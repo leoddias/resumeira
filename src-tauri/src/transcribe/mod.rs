@@ -43,7 +43,11 @@ impl ApiProvider {
 }
 
 /// One continuous piece of speech, as the transcriber heard it.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// `Debug` is implemented by hand and prints no text: this is what somebody
+/// said in a meeting, and a stray `{:?}` in a log line would put it on disk
+/// (docs/CONVENTIONS.md § Privacy).
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Segment {
     /// Seconds from the start of the meeting.
@@ -60,7 +64,9 @@ pub struct Segment {
 }
 
 /// A whole meeting's speech.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// `Debug` is redacted — see [`Segment`].
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Transcript {
     pub segments: Vec<Segment>,
@@ -117,6 +123,27 @@ impl Transcript {
             language,
             engine,
         })
+    }
+}
+
+impl std::fmt::Debug for Segment {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Segment")
+            .field("start", &self.start)
+            .field("end", &self.end)
+            .field("track", &self.track)
+            .field("text_chars", &self.text.chars().count())
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for Transcript {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Transcript")
+            .field("engine", &self.engine)
+            .field("language", &self.language)
+            .field("segments", &self.segments.len())
+            .finish()
     }
 }
 
@@ -267,6 +294,27 @@ mod tests {
         // Changing these strands every existing user's stored key.
         assert_eq!(ApiProvider::Groq.key_name(), "groq");
         assert_eq!(ApiProvider::OpenAi.key_name(), "openai");
+    }
+
+    #[test]
+    fn debug_output_never_contains_what_was_said() {
+        // A stray `{:?}` in a log line must not put a meeting on disk. This
+        // is a guard against someone restoring `#[derive(Debug)]` later.
+        let spoken = "the merger closes on Friday";
+        let t = transcript(vec![segment(0.0, 1.0, spoken)]);
+
+        let rendered = format!("{t:?}");
+        assert!(
+            !rendered.contains(spoken),
+            "Transcript debug leaked speech: {rendered}"
+        );
+        assert!(rendered.contains("segments: 1"), "{rendered}");
+
+        let rendered = format!("{:?}", t.segments[0]);
+        assert!(
+            !rendered.contains(spoken),
+            "Segment debug leaked speech: {rendered}"
+        );
     }
 
     #[test]

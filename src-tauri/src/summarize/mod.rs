@@ -57,14 +57,20 @@ pub enum ChatRole {
 ///
 /// Lives here rather than in `prompt` or `providers` because both need it:
 /// `prompt::build` produces these and `providers::complete` consumes them.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `Debug` is implemented by hand and prints no content: this struct carries
+/// the meeting transcript, and a single stray `{:?}` in a log line would put
+/// it on disk (docs/CONVENTIONS.md § Privacy).
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: ChatRole,
     pub content: String,
 }
 
 /// Something someone agreed to do.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// `Debug` is redacted — see [`ChatMessage`].
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActionItem {
     /// What is to be done.
@@ -81,7 +87,9 @@ pub struct ActionItem {
 }
 
 /// The note's structured content.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// `Debug` is redacted — see [`ChatMessage`].
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Summary {
     /// Short generated title; also the meeting folder's display name.
@@ -120,6 +128,35 @@ impl Summary {
             item.due = item.due.take().filter(|d| !d.trim().is_empty());
         }
         self
+    }
+}
+
+impl std::fmt::Debug for ChatMessage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ChatMessage")
+            .field("role", &self.role)
+            .field("content_chars", &self.content.chars().count())
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for ActionItem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ActionItem")
+            .field("has_owner", &self.owner.is_some())
+            .field("has_due", &self.due.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for Summary {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Summary")
+            .field("model", &self.model)
+            .field("bullets", &self.bullets.len())
+            .field("decisions", &self.decisions.len())
+            .field("action_items", &self.action_items.len())
+            .finish_non_exhaustive()
     }
 }
 
@@ -264,6 +301,39 @@ mod tests {
         };
         let json = serde_json::to_value(&item).expect("serialize");
         assert_eq!(json, serde_json::json!({ "task": "Follow up" }));
+    }
+
+    #[test]
+    fn debug_output_never_contains_meeting_content() {
+        // Guards against someone restoring `#[derive(Debug)]` on types that
+        // carry what was said or written about a meeting.
+        let secret = "the merger closes on Friday";
+
+        let message = ChatMessage {
+            role: ChatRole::User,
+            content: secret.to_owned(),
+        };
+        let rendered = format!("{message:?}");
+        assert!(!rendered.contains(secret), "ChatMessage leaked: {rendered}");
+
+        let summary = Summary {
+            title: secret.to_owned(),
+            bullets: vec![secret.to_owned()],
+            decisions: vec![secret.to_owned()],
+            action_items: vec![ActionItem {
+                task: secret.to_owned(),
+                owner: Some("Leo".to_owned()),
+                due: None,
+            }],
+            model: "test-model".to_owned(),
+        };
+        let rendered = format!("{summary:?}");
+        assert!(!rendered.contains(secret), "Summary leaked: {rendered}");
+        assert!(
+            !rendered.contains("Leo"),
+            "an owner's name is meeting content too: {rendered}"
+        );
+        assert!(rendered.contains("test-model"), "{rendered}");
     }
 
     #[test]
