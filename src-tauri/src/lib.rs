@@ -8,6 +8,7 @@ pub mod audio;
 pub mod commands;
 pub mod config;
 pub mod index;
+pub mod pipeline;
 pub mod recorder;
 pub mod secrets;
 pub mod session;
