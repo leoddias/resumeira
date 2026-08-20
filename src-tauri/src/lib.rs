@@ -6,7 +6,9 @@
 
 pub mod audio;
 pub mod commands;
+pub mod config;
 pub mod recorder;
+pub mod secrets;
 pub mod session;
 pub mod summarize;
 pub mod tracks;

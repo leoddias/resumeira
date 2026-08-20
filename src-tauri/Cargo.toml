@@ -32,6 +32,7 @@ tokio = { version = "1.53.1", features = ["fs", "io-util"] }
 whisper-rs = "0.16.0"
 reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "json", "stream", "multipart"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
+keyring = { version = "3.6.3", features = ["windows-native"] }
 
 [dev-dependencies]
 tempfile = "3.27.0"
