@@ -33,6 +33,15 @@ impl MeetingIndex {
         &self.notes_root
     }
 
+    /// Indexes a note that was just written.
+    ///
+    /// Called only after `storage::write_note` succeeded — the file is the
+    /// source of truth and the index must never race ahead of it (ADR-0007).
+    pub fn index_note(&self, folder: &Path) -> Result<(), String> {
+        let note = storage::read_note(folder).map_err(|error| error.to_string())?;
+        self.with_conn(|conn| index::upsert(conn, folder, &note).map_err(|error| error.to_string()))
+    }
+
     fn with_conn<T>(
         &self,
         action: impl FnOnce(&Connection) -> Result<T, String>,

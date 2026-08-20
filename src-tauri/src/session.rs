@@ -270,6 +270,24 @@ impl SessionManager {
         }
     }
 
+    /// Reports that the post-recording work failed.
+    ///
+    /// The recording itself already survived — this says the note did not
+    /// get written, which the user needs to see rather than a silent return
+    /// to idle that looks like success.
+    pub fn fail(&self, error: String) -> RecordingState {
+        match self.inner.lock() {
+            Ok(mut inner) => {
+                inner.session = None;
+                inner.state = RecordingState::Failed { error };
+                inner.state.clone()
+            }
+            Err(_) => RecordingState::Failed {
+                error: "recording state is unavailable".to_owned(),
+            },
+        }
+    }
+
     /// Declares the post-recording work finished.
     pub fn finish(&self) -> RecordingState {
         match self.inner.lock() {

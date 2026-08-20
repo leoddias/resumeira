@@ -4,7 +4,7 @@
 //! disagree about whether a recording is running. Every state change is
 //! emitted to the frontend and reflected in the tray.
 
-use crate::session::{RecordingState, SessionManager};
+use crate::session::{ProcessingStage, RecordingState, SessionManager};
 use crate::tray;
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 
@@ -22,10 +22,12 @@ pub fn start<R: Runtime>(app: &AppHandle<R>) -> RecordingState {
     state
 }
 
-/// Stops the current recording and returns the app to idle.
+/// Stops the current recording and hands the audio to the pipeline.
 ///
-/// M1 ends here: the audio is on disk. M2/M3 insert transcription and note
-/// writing between the stop and the return to idle.
+/// Returns as soon as capture has stopped. Transcribing and summarizing run
+/// in the background and report through the same state events, because they
+/// take minutes and the user must be free to close the window, start another
+/// meeting, or quit — the audio is already safe on disk either way.
 pub fn stop<R: Runtime>(app: &AppHandle<R>) -> RecordingState {
     let Some(manager) = app.try_state::<SessionManager>() else {
         return unavailable();
@@ -34,8 +36,14 @@ pub fn stop<R: Runtime>(app: &AppHandle<R>) -> RecordingState {
     let (state, report) = manager.stop();
     publish(app, &state);
 
-    if let Some(report) = report {
-        // Metadata only — never sample data (docs/CONVENTIONS.md § Privacy).
+    let Some(report) = report else {
+        let state = manager.finish();
+        publish(app, &state);
+        return state;
+    };
+
+    // Metadata only — never sample data (docs/CONVENTIONS.md § Privacy).
+    {
         for track in &report.tracks {
             match &track.error {
                 Some(error) => log::warn!(
@@ -53,9 +61,82 @@ pub fn stop<R: Runtime>(app: &AppHandle<R>) -> RecordingState {
         log::info!("meeting saved to {}", report.folder.display());
     }
 
-    let state = manager.finish();
-    publish(app, &state);
-    state
+    spawn_pipeline(app.clone(), report.folder);
+    manager.state()
+}
+
+/// Runs the post-recording pipeline for one meeting, off the caller's thread.
+fn spawn_pipeline<R: Runtime>(app: AppHandle<R>, folder: std::path::PathBuf) {
+    tauri::async_runtime::spawn(async move {
+        let outcome = run_pipeline(&app, &folder).await;
+
+        match outcome {
+            Ok(title) => log::info!("note written for '{title}'"),
+            Err(error) => {
+                log::warn!("could not turn the meeting into a note: {error}");
+                // The recording itself is safe; say what failed rather than
+                // sliding back to idle as if nothing had happened.
+                if let Some(manager) = app.try_state::<SessionManager>() {
+                    let state = manager.fail(error);
+                    publish(&app, &state);
+                    return;
+                }
+            }
+        }
+
+        if let Some(manager) = app.try_state::<SessionManager>() {
+            let state = manager.finish();
+            publish(&app, &state);
+        }
+    });
+}
+
+async fn run_pipeline<R: Runtime>(
+    app: &AppHandle<R>,
+    folder: &std::path::Path,
+) -> Result<String, String> {
+    let settings = app
+        .try_state::<crate::settings_commands::SettingsStore>()
+        .map(|store| store.get())
+        .unwrap_or_default();
+    let retention = settings.audio_retention;
+
+    let secrets: std::sync::Arc<dyn crate::secrets::SecretStore> =
+        std::sync::Arc::new(crate::secrets::OsKeychain);
+
+    let context = std::sync::Arc::new(crate::live::LiveContext {
+        settings,
+        secrets,
+        models_root: crate::models_root(app),
+    });
+
+    let transcriber = crate::live::LiveTranscriber::new(context.clone());
+    let summarizer = crate::live::LiveSummarizer::new(context);
+
+    let stage_app = app.clone();
+    let outcome =
+        crate::pipeline::process(folder, &transcriber, &summarizer, retention, move |stage| {
+            if let Some(manager) = stage_app.try_state::<SessionManager>() {
+                let state = manager.set_stage(match stage {
+                    crate::pipeline::Stage::Transcribing => ProcessingStage::Transcribing,
+                    crate::pipeline::Stage::Summarizing => ProcessingStage::Summarizing,
+                    crate::pipeline::Stage::Saving => ProcessingStage::Saving,
+                });
+                publish(&stage_app, &state);
+            }
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+
+    // The index follows the file, never the other way round (ADR-0007). A
+    // failed index costs search until the next rebuild, not the note.
+    if let Some(meetings) = app.try_state::<crate::meetings_commands::MeetingIndex>() {
+        if let Err(error) = meetings.index_note(folder) {
+            log::warn!("note written but not indexed: {error}");
+        }
+    }
+
+    Ok(outcome.title)
 }
 
 /// Pushes a state change to the window and the tray.

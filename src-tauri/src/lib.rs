@@ -25,6 +25,17 @@ use session::SessionManager;
 use std::path::PathBuf;
 use tauri::Manager;
 
+/// Where downloaded Whisper models live.
+pub fn models_root<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> PathBuf {
+    match app.path().app_data_dir() {
+        Ok(dir) => dir.join("models"),
+        Err(error) => {
+            log::warn!("no data directory ({error}); keeping models next to the app");
+            PathBuf::from("models")
+        }
+    }
+}
+
 /// Search index location under the app's data directory.
 fn index_path<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> PathBuf {
     match app.path().app_data_dir() {
