@@ -18,7 +18,7 @@ pub const TARGET_SAMPLE_RATE: u32 = 16_000;
 ///
 /// The two are kept apart end to end — mixing at capture time would throw
 /// away the only cheap "who was speaking" signal we get (ADR-0004).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Track {
     /// The user's microphone.
