@@ -10,7 +10,7 @@
 //! (`Summary::is_usable` decides "usable"), never a hollow note that looks
 //! finished and says nothing.
 
-use super::{ActionItem, Summary, SummarizeError};
+use super::{ActionItem, SummarizeError, Summary};
 use serde_json::Value;
 
 /// Parses a chat completion's raw reply text into a `Summary`.
@@ -31,10 +31,11 @@ pub fn parse_summary(
         reason: "no JSON object found in the model's reply".to_owned(),
     })?;
 
-    let value: Value = serde_json::from_str(&json_text).map_err(|err| SummarizeError::BadResponse {
-        provider,
-        reason: format!("could not parse JSON: {err}"),
-    })?;
+    let value: Value =
+        serde_json::from_str(&json_text).map_err(|err| SummarizeError::BadResponse {
+            provider,
+            reason: format!("could not parse JSON: {err}"),
+        })?;
 
     let title = value
         .get("title")
