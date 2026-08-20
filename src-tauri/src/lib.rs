@@ -6,6 +6,7 @@
 
 pub mod audio;
 pub mod recorder;
+pub mod session;
 pub mod tray;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
