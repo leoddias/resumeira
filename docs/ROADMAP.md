@@ -20,13 +20,13 @@ never the privacy rules or the test bar.
 - [ ] Mic capture via cpal → f32 frames (device selection, error surfacing)
 - [ ] System capture via WASAPI loopback, behind a `SystemCapture` trait with
       non-Windows stubs
-- [ ] Resample any input to 16 kHz mono (unit tests on synthetic buffers)
+- [x] Resample any input to 16 kHz mono (unit tests on synthetic buffers)
 - [ ] Opus encoder writing `.opus` incrementally (unit tests: header, flush,
       byte budget for a synthetic minute)
-- [ ] `recorder.rs`: start/stop session, two tracks, folder creation,
+- [x] `recorder.rs`: start/stop session, two tracks, folder creation,
       crash-safe incremental flush (unit tests on temp dirs)
 - [ ] Tray Start/Stop wired to a real session; recording state pushed to UI
-- [ ] Mixer: two tracks → one 16 kHz mono buffer for transcription (unit tests)
+- [x] Mixer: two tracks → one 16 kHz mono buffer for transcription (unit tests)
 
 ### M2 — Transcription
 - [ ] Routing policy `Local | Api` from settings, no implicit fallback
@@ -93,3 +93,6 @@ tool, stop investing.
 - i18n of the UI (pt-BR first)
 - Search across transcripts with semantic ranking
 - Per-meeting audio bookmarks / clip extraction
+- Band-limited (sinc) resampling — M1's linear interpolation has no
+  anti-aliasing filter; fine for speech into Whisper, revisit if audio is
+  ever reused for anything else

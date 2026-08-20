@@ -30,7 +30,7 @@ Contract (read-only for all packets): `src-tauri/src/audio/mod.rs` — `Track`,
     the input is already 16 kHz mono; every malformed-input case above;
     mixer length, mixer sum, mixer bounds, mixer with one empty side.
 - **Review:** conventions+privacy
-- **Status:** running
+- **Status:** merged
 
 ### T-M1-2 — Opus track writer
 - **Goal:** persist one track incrementally as Ogg/Opus, so a crash mid-meeting
@@ -109,7 +109,7 @@ Contract (read-only for all packets): `src-tauri/src/audio/mod.rs` — `Track`,
     `stop()` twice is safe; folder-collision naming; the converter is applied
     exactly once per chunk.
 - **Review:** conventions+privacy
-- **Status:** running
+- **Status:** merged
 
 ## Orchestrator-owned (not in any packet)
 
