@@ -14,7 +14,7 @@
 mod windows_impl {
     use cpal::traits::HostTrait;
 
-    use crate::audio::{AudioError, CaptureSource, ChunkSink};
+    use crate::audio::{AudioError, CaptureSource, ChunkSink, ErrorSink};
 
     use super::super::start_input_stream;
 
@@ -40,7 +40,7 @@ mod windows_impl {
     }
 
     impl CaptureSource for SystemCapture {
-        fn start(&mut self, sink: ChunkSink) -> Result<(), AudioError> {
+        fn start(&mut self, sink: ChunkSink, on_error: ErrorSink) -> Result<(), AudioError> {
             // Idempotent restart: drop whatever might already be running first.
             self.stop()?;
 
@@ -51,7 +51,7 @@ mod windows_impl {
 
             // Opening an *input* stream on an *output* device is exactly the
             // WASAPI loopback trick described in the module doc comment.
-            let stream = start_input_stream(&device, sink, "system audio")?;
+            let stream = start_input_stream(&device, sink, on_error, "system audio")?;
             self.device_name = device.to_string();
             self.stream = Some(stream);
             Ok(())
@@ -93,9 +93,12 @@ mod windows_impl {
             let mut capture = SystemCapture::new();
             let (tx, rx) = std::sync::mpsc::channel();
             capture
-                .start(Box::new(move |chunk| {
-                    let _ = tx.send(chunk);
-                }))
+                .start(
+                    Box::new(move |chunk| {
+                        let _ = tx.send(chunk);
+                    }),
+                    Box::new(|error| panic!("stream failed during a manual run: {error}")),
+                )
                 .expect("a default output device should be available for a manual run");
 
             let chunk = rx
@@ -113,7 +116,7 @@ pub use windows_impl::SystemCapture;
 
 #[cfg(not(target_os = "windows"))]
 mod stub {
-    use crate::audio::{AudioError, CaptureSource, ChunkSink};
+    use crate::audio::{AudioError, CaptureSource, ChunkSink, ErrorSink};
 
     /// Stub for platforms where cpal has no loopback trick (yet). Always
     /// reports [`AudioError::UnsupportedPlatform`] on `start`.
@@ -127,7 +130,7 @@ mod stub {
     }
 
     impl CaptureSource for SystemCapture {
-        fn start(&mut self, _sink: ChunkSink) -> Result<(), AudioError> {
+        fn start(&mut self, _sink: ChunkSink, _on_error: ErrorSink) -> Result<(), AudioError> {
             Err(AudioError::UnsupportedPlatform)
         }
 

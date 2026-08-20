@@ -2,7 +2,7 @@
 
 use cpal::traits::HostTrait;
 
-use crate::audio::{AudioError, CaptureSource, ChunkSink};
+use crate::audio::{AudioError, CaptureSource, ChunkSink, ErrorSink};
 
 use super::start_input_stream;
 
@@ -28,7 +28,7 @@ impl Default for MicCapture {
 }
 
 impl CaptureSource for MicCapture {
-    fn start(&mut self, sink: ChunkSink) -> Result<(), AudioError> {
+    fn start(&mut self, sink: ChunkSink, on_error: ErrorSink) -> Result<(), AudioError> {
         // Idempotent restart: drop whatever might already be running first.
         self.stop()?;
 
@@ -37,7 +37,7 @@ impl CaptureSource for MicCapture {
             .default_input_device()
             .ok_or(AudioError::NoDevice("microphone"))?;
 
-        let stream = start_input_stream(&device, sink, "microphone")?;
+        let stream = start_input_stream(&device, sink, on_error, "microphone")?;
         self.device_name = device.to_string();
         self.stream = Some(stream);
         Ok(())
@@ -80,9 +80,12 @@ mod tests {
         let mut capture = MicCapture::new();
         let (tx, rx) = std::sync::mpsc::channel();
         capture
-            .start(Box::new(move |chunk| {
-                let _ = tx.send(chunk);
-            }))
+            .start(
+                Box::new(move |chunk| {
+                    let _ = tx.send(chunk);
+                }),
+                Box::new(|error| panic!("stream failed during a manual run: {error}")),
+            )
             .expect("a default input device should be available for a manual run");
 
         let chunk = rx

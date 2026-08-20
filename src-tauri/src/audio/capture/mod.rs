@@ -14,7 +14,7 @@ mod sample;
 use cpal::traits::{DeviceTrait, StreamTrait};
 use cpal::{Data, Device, InputCallbackInfo, Stream};
 
-use crate::audio::{AudioChunk, AudioError, ChunkSink, TARGET_SAMPLE_RATE};
+use crate::audio::{AudioChunk, AudioError, ChunkSink, ErrorSink, TARGET_SAMPLE_RATE};
 
 /// Builds and starts an input stream on `device`, converting every delivered
 /// buffer into an [`AudioChunk`] and handing it to `sink`.
@@ -25,6 +25,7 @@ use crate::audio::{AudioChunk, AudioError, ChunkSink, TARGET_SAMPLE_RATE};
 fn start_input_stream(
     device: &Device,
     sink: ChunkSink,
+    on_error: ErrorSink,
     kind: &'static str,
 ) -> Result<Stream, AudioError> {
     let device_label = device.to_string();
@@ -64,10 +65,13 @@ fn start_input_stream(
     };
 
     let error_label = device_label.clone();
+    let mut on_error = on_error;
     let error_callback = move |err: cpal::Error| {
-        // No channel back to the caller exists once the stream is running,
-        // so a mid-recording device failure is logged, not propagated.
-        log::error!("capture[{kind}]: {}", stream_error(kind, &error_label, err));
+        // A device lost mid-recording is reported to the session, not just
+        // logged: the UI must stop claiming this track is live.
+        let mapped = stream_error(kind, &error_label, err);
+        log::error!("capture[{kind}]: {mapped}");
+        on_error(mapped);
     };
 
     let stream = device

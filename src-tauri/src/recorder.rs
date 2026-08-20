@@ -10,7 +10,7 @@
 //! on a path reachable while a recording is in progress.
 
 use crate::audio::{
-    AudioChunk, AudioError, CaptureSource, ChunkConverter, ChunkSink, Track, TrackWriter,
+    AudioChunk, AudioError, CaptureSource, ChunkConverter, ChunkSink, ErrorSink, Track, TrackWriter,
 };
 use chrono::{DateTime, Local};
 use std::path::{Path, PathBuf};
@@ -25,6 +25,16 @@ use std::sync::{Arc, Mutex};
 pub struct TrackReport {
     pub track: Track,
     pub sample_count: u64,
+    pub error: Option<String>,
+}
+
+/// Per-track status of a session that is still running.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TrackLiveness {
+    pub track: Track,
+    /// Still capturing. False once the device died or a write failed.
+    pub live: bool,
+    /// Why the track stopped, when it did.
     pub error: Option<String>,
 }
 
@@ -147,7 +157,27 @@ impl RecordingSession {
                 }
             });
 
-            match source.start(sink) {
+            // A device lost mid-recording arrives here, not through the
+            // chunk path. It fails exactly one track, the same way a write
+            // error does, so `stop()` and the UI report it identically.
+            let fault_error = error_slot.clone();
+            let fault_writer = writer_slot.clone();
+            let on_error: ErrorSink = Box::new(move |err| {
+                let Ok(mut error_guard) = fault_error.lock() else {
+                    return;
+                };
+                if error_guard.is_some() {
+                    return;
+                }
+                if let Ok(mut writer_guard) = fault_writer.lock() {
+                    if let Some(failed_writer) = writer_guard.take() {
+                        let _ = failed_writer.finish();
+                    }
+                }
+                *error_guard = Some(err);
+            });
+
+            match source.start(sink, on_error) {
                 Ok(()) => slots.push(TrackSlot::Active(ActiveTrack {
                     track,
                     source,
@@ -169,6 +199,36 @@ impl RecordingSession {
     /// The meeting folder this session is writing into.
     pub fn folder(&self) -> &Path {
         &self.folder
+    }
+
+    /// Per-track status *while the session is still running*.
+    ///
+    /// Exists so the UI can stop showing a track as live the moment its
+    /// device disappears, rather than finding out only at `stop()`.
+    pub fn track_liveness(&self) -> Vec<TrackLiveness> {
+        self.tracks
+            .iter()
+            .map(|slot| match slot {
+                TrackSlot::Active(active) => {
+                    let error = match active.error.lock() {
+                        Ok(guard) => guard.as_ref().map(ToString::to_string),
+                        // A poisoned lock means a panicking sink; report the
+                        // track as dead rather than claiming it is fine.
+                        Err(_) => Some("track state is unavailable".to_owned()),
+                    };
+                    TrackLiveness {
+                        track: active.track,
+                        live: error.is_none(),
+                        error,
+                    }
+                }
+                TrackSlot::FailedToStart { track, error } => TrackLiveness {
+                    track: *track,
+                    live: false,
+                    error: Some(error.to_string()),
+                },
+            })
+            .collect()
     }
 
     /// Stops every source, finishes every writer, and returns the folder
@@ -275,6 +335,7 @@ mod tests {
     /// no real audio thread involved.
     struct FakeSource {
         device_name: &'static str,
+        error_slot: Arc<Mutex<Option<ErrorSink>>>,
         start_error: Option<AudioError>,
         sink_slot: Arc<Mutex<Option<ChunkSink>>>,
         stop_calls: Arc<AtomicUsize>,
@@ -289,6 +350,7 @@ mod tests {
             (
                 FakeSource {
                     device_name,
+                    error_slot: Arc::new(Mutex::new(None)),
                     start_error: None,
                     sink_slot: sink_slot.clone(),
                     stop_calls: stop_calls.clone(),
@@ -298,10 +360,36 @@ mod tests {
             )
         }
 
+        /// Like `new`, but also hands back the error sink the session
+        /// installs, so a test can simulate a device dying mid-recording.
+        #[allow(clippy::type_complexity)]
+        fn with_error_channel(
+            device_name: &'static str,
+        ) -> (
+            Self,
+            Arc<Mutex<Option<ChunkSink>>>,
+            Arc<Mutex<Option<ErrorSink>>>,
+        ) {
+            let sink_slot = Arc::new(Mutex::new(None));
+            let error_slot = Arc::new(Mutex::new(None));
+            (
+                FakeSource {
+                    device_name,
+                    error_slot: error_slot.clone(),
+                    start_error: None,
+                    sink_slot: sink_slot.clone(),
+                    stop_calls: Arc::new(AtomicUsize::new(0)),
+                },
+                sink_slot,
+                error_slot,
+            )
+        }
+
         fn failing_to_start(device_name: &'static str, error: AudioError) -> Self {
             let sink_slot = Arc::new(Mutex::new(None));
             FakeSource {
                 device_name,
+                error_slot: Arc::new(Mutex::new(None)),
                 start_error: Some(error),
                 sink_slot,
                 stop_calls: Arc::new(AtomicUsize::new(0)),
@@ -310,12 +398,15 @@ mod tests {
     }
 
     impl CaptureSource for FakeSource {
-        fn start(&mut self, sink: ChunkSink) -> Result<(), AudioError> {
+        fn start(&mut self, sink: ChunkSink, on_error: ErrorSink) -> Result<(), AudioError> {
             if let Some(error) = self.start_error.take() {
                 return Err(error);
             }
             if let Ok(mut guard) = self.sink_slot.lock() {
                 *guard = Some(sink);
+            }
+            if let Ok(mut guard) = self.error_slot.lock() {
+                *guard = Some(on_error);
             }
             Ok(())
         }
@@ -327,6 +418,16 @@ mod tests {
 
         fn device_name(&self) -> String {
             self.device_name.to_string()
+        }
+    }
+
+    /// Fires the error sink a started `FakeSource` was given, simulating a
+    /// device that disappeared while the meeting was still running.
+    fn fail_device(error_slot: &Arc<Mutex<Option<ErrorSink>>>, error: AudioError) {
+        if let Ok(mut guard) = error_slot.lock() {
+            if let Some(on_error) = guard.as_mut() {
+                on_error(error);
+            }
         }
     }
 
@@ -658,5 +759,113 @@ mod tests {
 
         assert_eq!(convert_calls.load(Ordering::SeqCst), 5);
         session.stop();
+    }
+
+    #[test]
+    fn a_device_lost_mid_recording_stops_only_that_track() {
+        let dir = tempdir().expect("temp dir");
+        let (mic_source, mic_sink, mic_errors) = FakeSource::with_error_channel("mic");
+        let (system_source, system_sink, _) = FakeSource::with_error_channel("system");
+        let (mic_writer, mic_writes, _) = FakeWriter::new();
+        let (system_writer, system_writes, _) = FakeWriter::new();
+
+        let mut session = RecordingSession::start(
+            dir.path(),
+            vec![
+                (Track::Mic, Box::new(mic_source), Box::new(mic_writer)),
+                (
+                    Track::System,
+                    Box::new(system_source),
+                    Box::new(system_writer),
+                ),
+            ],
+            counting_converter(Arc::new(AtomicUsize::new(0))),
+        )
+        .expect("session starts");
+
+        push_chunk(&mic_sink, vec![0.1; 4]);
+        push_chunk(&system_sink, vec![0.2; 4]);
+
+        // The microphone is unplugged.
+        fail_device(&mic_errors, AudioError::Stream("device removed".to_owned()));
+
+        // Anything the dead device somehow still delivers is dropped, while
+        // the other track keeps recording normally.
+        push_chunk(&mic_sink, vec![0.3; 4]);
+        push_chunk(&system_sink, vec![0.4; 4]);
+
+        assert_eq!(
+            mic_writes.load(Ordering::SeqCst),
+            1,
+            "the lost track must stop writing at the failure"
+        );
+        assert_eq!(
+            system_writes.load(Ordering::SeqCst),
+            2,
+            "the surviving track must keep recording"
+        );
+
+        let report = session.stop();
+        let mic = report
+            .tracks
+            .iter()
+            .find(|t| t.track == Track::Mic)
+            .expect("mic reported");
+        assert!(
+            mic.error
+                .as_deref()
+                .is_some_and(|e| e.contains("device removed")),
+            "the report must say why the track died, got {:?}",
+            mic.error
+        );
+        let system = report
+            .tracks
+            .iter()
+            .find(|t| t.track == Track::System)
+            .expect("system reported");
+        assert_eq!(system.error, None);
+    }
+
+    #[test]
+    fn liveness_reports_a_dead_track_before_the_session_is_stopped() {
+        let dir = tempdir().expect("temp dir");
+        let (mic_source, _mic_sink, mic_errors) = FakeSource::with_error_channel("mic");
+        let (system_source, _system_sink, _) = FakeSource::with_error_channel("system");
+        let (mic_writer, _, _) = FakeWriter::new();
+        let (system_writer, _, _) = FakeWriter::new();
+
+        let session = RecordingSession::start(
+            dir.path(),
+            vec![
+                (Track::Mic, Box::new(mic_source), Box::new(mic_writer)),
+                (
+                    Track::System,
+                    Box::new(system_source),
+                    Box::new(system_writer),
+                ),
+            ],
+            counting_converter(Arc::new(AtomicUsize::new(0))),
+        )
+        .expect("session starts");
+
+        assert!(
+            session.track_liveness().iter().all(|t| t.live),
+            "both tracks start live"
+        );
+
+        fail_device(&mic_errors, AudioError::Stream("device removed".to_owned()));
+
+        let liveness = session.track_liveness();
+        let mic = liveness
+            .iter()
+            .find(|t| t.track == Track::Mic)
+            .expect("mic listed");
+        let system = liveness
+            .iter()
+            .find(|t| t.track == Track::System)
+            .expect("system listed");
+        assert!(!mic.live, "a lost device must not still be reported live");
+        assert!(mic.error.is_some());
+        assert!(system.live);
     }
 }

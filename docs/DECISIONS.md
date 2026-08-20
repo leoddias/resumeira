@@ -220,3 +220,25 @@ clones and CI runners is exactly the kind that gets misdiagnosed for hours.
 At the root, both invocation styles find it, since cwd inside `src-tauri/`
 still walks up.
 **Consequences:** Any future cargo configuration goes in the root file.
+
+## ADR-0017 — `CaptureSource` reports mid-stream failures through an error sink
+**Date:** 2026-08-20 · **Status:** accepted
+**Decision:** `CaptureSource::start` takes a second callback, `ErrorSink`,
+alongside the chunk sink. A device that fails while recording reports through
+it; the recorder marks exactly that track failed — finalizing its writer so
+the captured audio stays playable — and `RecordingSession::track_liveness()`
+exposes per-track status while the session is still running. The UI re-reads
+state every 2 s while recording.
+**Why:** Without it, a device lost mid-meeting could only be logged from
+cpal's error callback, so the session never learned and the UI kept showing a
+dead track as live. For an app whose entire pitch is an honest answer to "is
+this recording?", silently claiming a dead microphone is live is the worst
+failure mode available. A second callback was chosen over threading errors
+through the chunk sink (which would have forced every chunk to carry a
+`Result`) and over polling a `take_error()` method (which needs a poller and
+still leaves a window). It mirrors cpal's own data/error callback pair, so
+the capture implementations pass theirs straight through.
+**Consequences:** Any future `CaptureSource` must supply both callbacks.
+Liveness is pull-based: the 2 s refresh means a dead track is visible within
+about two seconds, not instantly. If that proves too slow in dogfood, push a
+state event from the error sink instead — the plumbing is already in place.

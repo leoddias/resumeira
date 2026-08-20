@@ -13,6 +13,9 @@ import { INITIAL_RECORDING_STATE, type RecordingState } from '../ipc/types';
  * State is owned by Rust — the tray can start a recording without the window
  * being open — so this hook reflects it rather than holding its own copy.
  */
+/** How often to re-ask Rust for per-track liveness while recording. */
+const REFRESH_INTERVAL_MS = 2000;
+
 export function useRecording() {
   const [state, setState] = useState<RecordingState>(INITIAL_RECORDING_STATE);
 
@@ -45,6 +48,30 @@ export function useRecording() {
       unlisten?.();
     };
   }, []);
+
+  // Per-track liveness changes without an event — a device can disappear at
+  // any moment and Rust learns about it on the audio thread, not through a
+  // user action. Re-asking while recording is what keeps the UI from showing
+  // a dead microphone as live.
+  const recording = state.status === 'recording';
+  useEffect(() => {
+    if (!recording) return;
+    let active = true;
+    const timer = setInterval(() => {
+      getRecordingState()
+        .then((current) => {
+          if (active) setState(current);
+        })
+        .catch(() => {
+          // A failed refresh is not worth destroying a good state over; the
+          // next tick tries again.
+        });
+    }, REFRESH_INTERVAL_MS);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [recording]);
 
   const start = useCallback(async () => {
     setState({ status: 'starting' });

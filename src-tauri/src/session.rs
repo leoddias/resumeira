@@ -128,12 +128,39 @@ impl SessionManager {
 
     /// The current state. Never panics: a poisoned lock reports a failure
     /// rather than taking the app down mid-meeting.
+    ///
+    /// While recording, per-track liveness is read from the running session
+    /// rather than from the cached state, so a device that died is reported
+    /// as dead the next time anyone asks.
     pub fn state(&self) -> RecordingState {
-        match self.inner.lock() {
-            Ok(inner) => inner.state.clone(),
-            Err(_) => RecordingState::Failed {
+        let Ok(inner) = self.inner.lock() else {
+            return RecordingState::Failed {
                 error: "recording state is unavailable".to_owned(),
-            },
+            };
+        };
+
+        match (&inner.state, &inner.session) {
+            (RecordingState::Recording { started_at, tracks }, Some(session)) => {
+                let liveness = session.track_liveness();
+                RecordingState::Recording {
+                    started_at: *started_at,
+                    tracks: tracks
+                        .iter()
+                        .map(
+                            |status| match liveness.iter().find(|l| l.track == status.track) {
+                                Some(current) => TrackStatus {
+                                    track: status.track,
+                                    device_name: status.device_name.clone(),
+                                    live: current.live,
+                                    error: current.error.clone(),
+                                },
+                                None => status.clone(),
+                            },
+                        )
+                        .collect(),
+                }
+            }
+            _ => inner.state.clone(),
         }
     }
 
@@ -268,7 +295,7 @@ impl Inner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audio::{AudioChunk, CaptureSource, ChunkSink, TrackWriter};
+    use crate::audio::{AudioChunk, CaptureSource, ChunkSink, ErrorSink, TrackWriter};
     use std::path::Path;
     use std::sync::Arc;
 
@@ -278,7 +305,7 @@ mod tests {
     }
 
     impl CaptureSource for SilentSource {
-        fn start(&mut self, _sink: ChunkSink) -> Result<(), AudioError> {
+        fn start(&mut self, _sink: ChunkSink, _on_error: ErrorSink) -> Result<(), AudioError> {
             if self.fail_start {
                 Err(AudioError::NoDevice("input"))
             } else {

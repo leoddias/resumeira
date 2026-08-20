@@ -112,10 +112,20 @@ pub enum AudioError {
 /// unboundedly, or panic.
 pub type ChunkSink = Box<dyn FnMut(AudioChunk) + Send + 'static>;
 
+/// Callback a capture source reports a mid-stream failure through.
+///
+/// Errors that happen *before* the stream is running come back from
+/// [`CaptureSource::start`]; this is the only route for a device that dies
+/// while a meeting is being recorded. Without it the session would keep
+/// reporting a dead track as live, which is the one thing this product must
+/// never do. Called on the OS audio thread: must not block or panic.
+pub type ErrorSink = Box<dyn FnMut(AudioError) + Send + 'static>;
+
 /// A hardware (or virtual) source of audio for exactly one track.
 pub trait CaptureSource: Send {
-    /// Begin delivering chunks to `sink`. Returns once the stream is running.
-    fn start(&mut self, sink: ChunkSink) -> Result<(), AudioError>;
+    /// Begin delivering chunks to `sink`, reporting mid-stream failures to
+    /// `on_error`. Returns once the stream is running.
+    fn start(&mut self, sink: ChunkSink, on_error: ErrorSink) -> Result<(), AudioError>;
 
     /// Stop delivering chunks. Must be safe to call more than once.
     fn stop(&mut self) -> Result<(), AudioError>;
