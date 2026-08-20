@@ -406,3 +406,111 @@ body {
   color: var(--fg);
   cursor: pointer;
 }
+
+/* Model manager */
+
+.model-manager {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  max-width: 44rem;
+}
+
+.model-manager__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.model-manager__error,
+.model-manager__download-error,
+.model-manager__delete-error {
+  color: var(--accent);
+}
+
+.model-manager__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.model-manager__item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid #2a2b33;
+  border-radius: 8px;
+}
+
+.model-manager__info {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.model-manager__name {
+  font-weight: 600;
+}
+
+.model-manager__size,
+.model-manager__status {
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+/*
+ * A real percentage, not a spinner: the default model is about 1.6 GB, and
+ * an indeterminate spinner running for ten minutes reads as a frozen app.
+ */
+.model-manager__progress {
+  position: relative;
+  height: 1.25rem;
+  border-radius: 6px;
+  background: #1d1e25;
+  overflow: hidden;
+}
+
+.model-manager__progress-bar {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.2s ease;
+}
+
+.model-manager__progress-label {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg);
+}
+
+.model-manager__actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.model-manager__actions button {
+  padding: 0.4rem 0.8rem;
+  border: 1px solid #35363f;
+  border-radius: 6px;
+  background: #1d1e25;
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.model-manager__confirm {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  color: var(--accent);
+}

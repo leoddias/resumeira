@@ -56,14 +56,14 @@ never the privacy rules or the test bar.
 - [x] Recording bar: elapsed time, per-track level, stop
 - [x] Settings: notes folder, routing, whisper model, summary provider, key
       entry (write-only, masked, "test key"), audio retention
-- [ ] Loading / empty / error states for every panel
-- [ ] First-run onboarding: mic permission, folder choice, key or local model
+- [x] Loading / empty / error states for every panel
+- [x] First-run onboarding: mic permission, folder choice, key or local model
 
 ### M5 — Polish + dogfood gate
-- [ ] Error surfaces for the failure modes that matter: no mic, no loopback
+- [x] Error surfaces for the failure modes that matter: no mic, no loopback
       device, disk full, provider 401/429, model download interrupted
-- [ ] `tauri-plugin-updater` + GitHub Releases workflow (unsigned)
-- [ ] README: permissions, install, SmartScreen note, data locations, backup,
+- [x] `tauri-plugin-updater` + GitHub Releases workflow (unsigned)
+- [x] README: permissions, install, SmartScreen note, data locations, backup,
       limitations, telemetry statement
 - [ ] **Gate:** use Resumeira for every meeting for 2 weeks
 

@@ -10,6 +10,7 @@ import {
   type TranscriptionEngine,
   type WhisperApiProvider,
 } from '../ipc/settings';
+import ModelManager from './ModelManager';
 import { useSettings } from '../state/useSettings';
 
 const KEY_PROVIDERS: { id: WhisperApiProvider | SummaryProvider; label: string }[] = [
@@ -233,6 +234,8 @@ function SettingsForm({ settings, keys, saveState, onSave, onSaveKey, onRemoveKe
       </label>
 
       <ApiKeys keys={keys} onSaveKey={onSaveKey} onRemoveKey={onRemoveKey} />
+
+      <ModelManager />
 
       {missingKeyWarning !== undefined && (
         <div className="settings__key-warning" role="alert">
