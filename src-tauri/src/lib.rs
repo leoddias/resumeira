@@ -8,6 +8,7 @@ pub mod audio;
 pub mod commands;
 pub mod config;
 pub mod index;
+pub mod meetings_commands;
 pub mod pipeline;
 pub mod recorder;
 pub mod secrets;
@@ -22,6 +23,17 @@ pub mod tray;
 use session::SessionManager;
 use std::path::PathBuf;
 use tauri::Manager;
+
+/// Search index location under the app's data directory.
+fn index_path<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> PathBuf {
+    match app.path().app_data_dir() {
+        Ok(dir) => dir.join("index.sqlite"),
+        Err(error) => {
+            log::warn!("no data directory ({error}); keeping the index next to the app");
+            PathBuf::from("index.sqlite")
+        }
+    }
+}
 
 /// Folder meetings are written into: the user's choice, or `~/Resumeira`.
 ///
@@ -45,6 +57,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_log::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             commands::start_recording,
             commands::stop_recording,
@@ -54,6 +67,11 @@ pub fn run() {
             settings_commands::key_status,
             settings_commands::set_api_key,
             settings_commands::delete_api_key,
+            meetings_commands::list_meetings,
+            meetings_commands::search_meetings,
+            meetings_commands::read_meeting,
+            meetings_commands::open_meeting_folder,
+            meetings_commands::rebuild_index,
         ])
         .setup(|app| {
             let settings = settings_commands::SettingsStore::load_from(
@@ -65,9 +83,18 @@ pub fn run() {
                 crate::secrets::OsKeychain,
             )));
             app.manage(SessionManager::new(
-                notes_root,
+                notes_root.clone(),
                 Box::new(tracks::LiveTrackFactory),
             ));
+            match meetings_commands::MeetingIndex::open(&index_path(app.handle()), notes_root) {
+                Ok(meetings) => {
+                    app.manage(meetings);
+                }
+                // A broken index costs search, not recording. The app still
+                // records and writes notes; "rebuild index" repairs it.
+                Err(error) => log::error!("meeting index unavailable: {error}"),
+            }
+
             tray::setup(app)?;
             Ok(())
         })

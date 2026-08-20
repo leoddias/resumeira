@@ -25,6 +25,9 @@ pub struct NoteRecord {
     pub model: String,
     pub language: Option<String>,
     pub created_at: String,
+    /// First couple of lines of the summary, for a list row. Kept here so
+    /// listing meetings is one query rather than one file read per meeting.
+    pub preview: String,
 }
 
 /// Anything that can go wrong opening or querying the index.
@@ -129,14 +132,31 @@ fn row_to_record(row: &rusqlite::Row) -> rusqlite::Result<NoteRecord> {
         model: row.get("model")?,
         language: row.get("language")?,
         created_at: row.get("created_at")?,
+        preview: preview_of(&row.get::<_, String>("summary")?),
     })
+}
+
+/// How much of a summary a list row shows.
+const PREVIEW_CHARS: usize = 180;
+
+/// Condenses a summary into one line for a list row.
+///
+/// Truncates on a character boundary, not a byte one — meeting summaries are
+/// routinely non-ASCII and slicing bytes would panic.
+fn preview_of(summary: &str) -> String {
+    let flattened = summary.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flattened.chars().count() <= PREVIEW_CHARS {
+        return flattened;
+    }
+    let cut: String = flattened.chars().take(PREVIEW_CHARS).collect();
+    format!("{}…", cut.trim_end())
 }
 
 /// Every indexed note, newest first.
 pub fn list(conn: &Connection) -> Result<Vec<NoteRecord>, IndexError> {
     let mut stmt = conn
         .prepare(
-            "SELECT folder, title, engine, model, language, created_at
+            "SELECT folder, title, engine, model, language, created_at, summary
              FROM notes ORDER BY created_at DESC, folder DESC",
         )
         .map_err(|source| IndexError::Query { source })?;
@@ -160,7 +180,7 @@ pub fn search(conn: &Connection, query: &str) -> Result<Vec<NoteRecord>, IndexEr
 
     let mut stmt = conn
         .prepare(
-            "SELECT folder, title, engine, model, language, created_at
+            "SELECT folder, title, engine, model, language, created_at, summary
              FROM notes
              WHERE title LIKE ?1 ESCAPE '\\' COLLATE NOCASE
                 OR summary LIKE ?1 ESCAPE '\\' COLLATE NOCASE
@@ -213,6 +233,48 @@ pub fn rebuild_from_disk(conn: &Connection, notes_root: &Path) -> Result<usize, 
     }
 
     Ok(indexed)
+}
+
+#[cfg(test)]
+mod preview_tests {
+    use super::preview_of;
+
+    #[test]
+    fn a_short_summary_is_its_own_preview() {
+        assert_eq!(preview_of("Short one."), "Short one.");
+    }
+
+    #[test]
+    fn line_breaks_collapse_into_one_line() {
+        assert_eq!(
+            preview_of(
+                "First line.
+
+- a bullet"
+            ),
+            "First line. - a bullet"
+        );
+    }
+
+    #[test]
+    fn a_long_summary_is_cut_on_a_character_boundary() {
+        // Multibyte throughout: a byte-based slice would panic here.
+        let long = "ação ".repeat(200);
+        let preview = preview_of(&long);
+        assert!(preview.ends_with('…'));
+        assert!(preview.chars().count() <= 181);
+    }
+
+    #[test]
+    fn an_empty_summary_previews_as_empty() {
+        assert_eq!(
+            preview_of(
+                "   
+  "
+            ),
+            ""
+        );
+    }
 }
 
 #[cfg(test)]
