@@ -7,65 +7,57 @@ Contract (read-only for all packets): `src-tauri/src/audio/mod.rs` — `Track`,
 `AudioChunk`, `AudioError`, `CaptureSource`, `TrackWriter`, `ChunkConverter`,
 `TARGET_SAMPLE_RATE`. Do not modify it; if it is wrong, report and stop.
 
-## In flight — M4 (UI)
+## In flight — M5 (polish and distribution)
 
-Contract (read-only for all packets): `src/ipc/types.ts`, `src/ipc/meetings.ts`,
-`src/ipc/settings.ts`. Do not modify them; if one is wrong, report and stop.
-Frontend tests stub the IPC module with `vi.mock` — never call Tauri.
-
-### T-M4-1 — Meetings list with search
-- **Goal:** open the window and see every meeting, newest first, and find one.
-- **Owns:** `src/views/Meetings.tsx`, `src/state/useMeetings.ts`
-- **Reads:** `src/ipc/meetings.ts`, `src/views/format.ts`, `src/index.css`
+### T-M5-1 — Release workflow and auto-update
+- **Goal:** a tester downloads one installer and then receives fixes without
+  being told to download anything again.
+- **Owns:** `.github/workflows/release.yml`
+- **Reads:** `.github/workflows/ci.yml`, `src-tauri/tauri.conf.json`,
+  `src-tauri/Cargo.toml`, `package.json`
 - **Done when:**
-  - The list shows title, date and preview per meeting, newest first, and
-    selecting one calls the `onOpen` prop with its folder.
-  - A search box filters via `searchMeetings`; a cleared box returns to the
-    full list. Debounce so typing does not fire a query per keystroke.
-  - Three honest states, all tested: loading, empty ("no meetings yet"), and
-    failed (says what failed and offers a retry — never a blank list that
-    looks like "you have no meetings").
-  - The component takes state via props or a hook you own; IPC is stubbed in
-    tests with `vi.mock('../ipc/meetings', ...)`.
+  - A tag push (`v*`) builds the Windows installer and publishes a GitHub
+    Release with the updater artifacts attached.
+  - `tauri-plugin-updater` is configured against that release feed. The
+    plugin, its `Cargo.toml` entry, the `tauri.conf.json` block and the
+    capability permission are **requested edits** in your report — those
+    files are orchestrator-owned. Give their exact content.
+  - The build is unsigned for now (ADR-0014). Say in the report exactly what
+    a tester will see on first launch because of that, so the README can be
+    accurate.
+  - Signing keys are never committed. The updater's public key belongs in
+    `tauri.conf.json`; the private key is a repository secret, and your
+    report must state which secret names the workflow expects.
+  - You cannot run this workflow here, so do not claim it passes. Verify what
+    you can (YAML parses, action versions exist, commands match the ones in
+    `ci.yml` that do run) and say plainly what remains unverified.
 - **Review:** conventions
 - **Status:** queued
 
-### T-M4-2 — Note view
-- **Goal:** read a meeting: the summary first, the transcript under it.
-- **Owns:** `src/views/Note.tsx`, `src/notes/**`
-- **Reads:** `src/ipc/meetings.ts`, `src/views/format.ts`, `src/index.css`
+### T-M5-2 — README for a stranger installing this
+- **Goal:** someone who is not the author can install Resumeira, grant the
+  right permissions, and understand exactly what leaves their machine.
+- **Owns:** `README.md`
+- **Reads:** `PLAN.md`, `docs/DECISIONS.md`, `docs/ROADMAP.md`,
+  `src-tauri/src/config.rs`, `src-tauri/src/secrets.rs`, and the source
+  generally — every claim must be checked against the code.
 - **Done when:**
-  - Renders the summary Markdown (a small renderer in `src/notes/` — headings,
-    lists, bold, paragraphs is enough; **add no dependency**) and the
-    transcript below a divider.
-  - Transcript lines show their timestamp and are visually distinguishable by
-    track: the user's microphone versus everyone else. A line with no track
-    still renders.
-  - States the engine and model that produced it, so the note is honest about
-    where it came from, and says when the audio was deleted.
-  - "Open folder" calls `openMeetingFolder`.
-  - Loading, empty-transcript and error states are tested. Markdown rendering
-    must escape HTML in the source text — a model-generated title is
-    untrusted input.
-- **Review:** conventions
-- **Status:** queued
-
-### T-M4-3 — Settings screen
-- **Goal:** choose where notes go, which engine transcribes, which model
-  summarizes, and paste API keys.
-- **Owns:** `src/views/Settings.tsx`, `src/state/useSettings.ts`
-- **Reads:** `src/ipc/settings.ts`, `src/index.css`
-- **Done when:**
-  - Every field in `Settings` is editable and saved via `saveSettings`.
-  - Key fields are **write-only**: show `configured` plus the masked `hint`
-    from `KeyStatus`, never a value. A key input clears itself after saving.
-  - **The screen states plainly when the current configuration will send
-    audio off the machine**, using `sendsAudioToTheCloud`. This is the
-    product's central promise; a user must never discover it by accident.
-  - Choosing the API engine without a key for that provider warns before
-    saving, naming the account from `requiredTranscriptionAccount`.
-  - Loading, saving, and save-failed states are tested, plus the cloud
-    warning appearing and disappearing with the engine choice.
+  - Install and first-run instructions for Windows, including the SmartScreen
+    warning an unsigned build produces and what to click.
+  - The permissions section is accurate: what Windows asks for, when, and why.
+  - A data-locations table (notes, settings, index, models, keys) matching
+    what `config.rs`, `secrets.rs` and `lib.rs` actually do — read them, do
+    not copy the current README, which predates most of the code.
+  - A **network activity** section listing every request the app can make,
+    verified against the source. The current README claims a list is
+    exhaustive; make that claim true or correct it.
+  - A telemetry statement (ADR-0010) and a plain statement of what is not
+    built yet, so nobody installs it expecting macOS or live transcription.
+  - Development instructions matching the real commands, including the CMake
+    and MSVC prerequisites the audio stack needs (ADR-0015/0016).
+  - **Any claim you cannot verify in the source is removed rather than
+    softened.** A privacy promise that is not true in code is the worst
+    possible line in this file.
 - **Review:** conventions
 - **Status:** queued
 
