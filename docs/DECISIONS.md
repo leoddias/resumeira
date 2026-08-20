@@ -187,3 +187,20 @@ only matter once strangers install the app; among friendly testers a
 SmartScreen warning is a documented step in the README.
 **Consequences:** The README explains the warning. Signing is a prerequisite
 for any public launch and is tracked in the roadmap.
+
+## ADR-0015 — Opus via the `opus` crate; the build needs CMake + MSVC
+**Date:** 2026-08-20 · **Status:** accepted
+**Decision:** Encode with the `opus` crate (which vendors libopus through
+`audiopus_sys` and builds it with CMake), muxed into Ogg with the `ogg` crate.
+Capture uses `cpal`. `src-tauri/.cargo/config.toml` pins
+`CMAKE_POLICY_VERSION_MINIMUM=3.5` so the vendored libopus configures under
+CMake 4, and the README lists CMake and the MSVC build tools as prerequisites.
+**Why:** There is no mature pure-Rust Opus *encoder*, and Opus is what makes an
+hour of meeting fit in ~10 MB (ADR-0004). The alternatives were worse: FLAC is
+pure Rust but ~6× larger, and WAV is ~60×. The CMake pin is needed because
+libopus's bundled CMakeLists predates CMake 3.5 and CMake 4 rejects it rather
+than warning — without the pin the failure is an opaque build-script panic.
+**Consequences:** Contributors need CMake and a C toolchain, not just Rust.
+First build is slower. If libopus ever becomes a packaging problem for
+signed installers, revisit — the encoder sits behind the `TrackWriter` trait
+precisely so it can be swapped.

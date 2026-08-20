@@ -1,0 +1,5 @@
+# libopus (vendored by audiopus_sys) still declares a cmake_minimum_required
+# that CMake 4 refuses outright. Without this the whole audio stack fails to
+# build on any machine with a current CMake. See ADR-0015.
+[env]
+CMAKE_POLICY_VERSION_MINIMUM = "3.5"
