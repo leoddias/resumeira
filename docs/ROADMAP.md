@@ -114,3 +114,40 @@ tool, stop investing.
   note's safety is unaffected and tested
 - `index::search` uses `LIKE` rather than SQLite FTS5 — no ranking or
   tokenizing; revisit with an FTS5 feature flag if search quality matters
+
+## Manual step: enabling auto-update
+
+The release workflow (`.github/workflows/release.yml`) is in place, but the
+updater plugin is deliberately **not** wired yet, because it needs a keypair
+that only a human can create and store. Doing it half-way — a placeholder
+public key committed to `tauri.conf.json` — would ship a config that fails at
+build or, worse, an updater that cannot verify what it downloads.
+
+To enable it:
+
+1. `npm run tauri signer generate -- -w resumeira.key` (keep the file out of
+   the repo; `.gitignore` already excludes `*.local`, so name it accordingly
+   or store it outside the tree).
+2. Put the **private** key's contents in the repository secret
+   `TAURI_SIGNING_PRIVATE_KEY`, and its password in
+   `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`.
+3. Put the **public** key into `src-tauri/tauri.conf.json`:
+   ```json
+   "plugins": {
+     "updater": {
+       "active": true,
+       "endpoints": ["https://github.com/leoddias/resumeira/releases/latest/download/latest.json"],
+       "pubkey": "<the public key>"
+     }
+   }
+   ```
+4. Add `tauri-plugin-updater = "2"` to `src-tauri/Cargo.toml`,
+   `.plugin(tauri_plugin_updater::Builder::new().build())` to the builder
+   chain in `src-tauri/src/lib.rs`, and `"updater:default"` to
+   `src-tauri/capabilities/default.json`.
+5. Push a `v*` tag and confirm the release publishes with `latest.json` and
+   the `.sig` artifacts attached.
+
+Until step 5 has actually run once, treat the release pipeline as untested:
+the workflow's YAML, action versions and build commands were verified, but
+no tag has ever been pushed through it.
