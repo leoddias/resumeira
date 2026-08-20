@@ -29,32 +29,32 @@ never the privacy rules or the test bar.
 - [x] Mixer: two tracks → one 16 kHz mono buffer for transcription (unit tests)
 
 ### M2 — Transcription
-- [ ] Routing policy `Local | Api` from settings, no implicit fallback
+- [x] Routing policy `Local | Api` from settings, no implicit fallback
       (unit tests covering: no key + Api selected, local model missing, …)
-- [ ] Groq + OpenAI Whisper clients (fixture tests incl. error bodies,
+- [x] Groq + OpenAI Whisper clients (fixture tests incl. error bodies,
       chunking for long meetings)
-- [ ] whisper-rs local batch transcription with progress events
-- [ ] Model manager: download `large-v3-turbo` with progress + checksum,
+- [x] whisper-rs local batch transcription with progress events
+- [x] Model manager: download `large-v3-turbo` with progress + checksum,
       store in appdata, allow smaller models (unit tests for path/verify)
-- [ ] Transcript model with timestamps + track attribution
+- [x] Transcript model with timestamps + track attribution
 
 ### M3 — Notes & summary
-- [ ] Prompt builder: fixed template → title, ~5 bullets, decisions, action
+- [x] Prompt builder: fixed template → title, ~5 bullets, decisions, action
       items with owners; answers in the transcript's language (unit tests)
-- [ ] Anthropic/OpenAI/Groq chat clients (fixture tests incl. error bodies)
-- [ ] Response parser → `Summary` struct, tolerant of formatting drift (tests)
-- [ ] `storage.rs`: meeting folder layout + `notes.md` writer (summary,
+- [x] Anthropic/OpenAI/Groq chat clients (fixture tests incl. error bodies)
+- [x] Response parser → `Summary` struct, tolerant of formatting drift (tests)
+- [x] `storage.rs`: meeting folder layout + `notes.md` writer (summary,
       divider, transcript) (unit tests on temp dirs)
-- [ ] SQLite index: upsert on write, list, full-text search, rebuild-from-disk
+- [x] SQLite index: upsert on write, list, full-text search, rebuild-from-disk
       (unit tests)
-- [ ] Audio retention setting: keep (default) or delete after transcription
+- [x] Audio retention setting: keep (default) or delete after transcription
       (test proving only the intended path is deleted)
 
 ### M4 — UI
-- [ ] Meetings list with search, sorted by date
-- [ ] Note view: rendered summary + transcript, "open folder", re-run summary
-- [ ] Recording bar: elapsed time, per-track level, stop
-- [ ] Settings: notes folder, routing, whisper model, summary provider, key
+- [x] Meetings list with search, sorted by date
+- [x] Note view: rendered summary + transcript, "open folder", re-run summary
+- [x] Recording bar: elapsed time, per-track level, stop
+- [x] Settings: notes folder, routing, whisper model, summary provider, key
       entry (write-only, masked, "test key"), audio retention
 - [ ] Loading / empty / error states for every panel
 - [ ] First-run onboarding: mic permission, folder choice, key or local model
