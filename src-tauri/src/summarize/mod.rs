@@ -8,11 +8,27 @@
 //! Provider calls happen here in Rust so API keys never cross IPC into the
 //! WebView (ADR-0009).
 
+pub mod cli;
 pub mod parse;
 pub mod prompt;
 pub mod providers;
 
 use serde::{Deserialize, Serialize};
+
+/// How the summary is produced.
+///
+/// Both engines send the transcript to a frontier model — the CLI one just
+/// bills it to a subscription the user already has instead of an API key
+/// (ADR-0020). Neither is private, and neither is ever chosen implicitly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum SummaryEngine {
+    /// A cloud chat API with the user's own key.
+    #[default]
+    Api,
+    /// An agent CLI installed on this machine, under the user's own account.
+    Cli,
+}
 
 /// LLM providers a user can bring a key for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -196,11 +212,42 @@ pub enum SummarizeError {
         tokens: usize,
     },
 
+    #[error("{cli} is not installed, or not on this machine's PATH")]
+    CliMissing { cli: &'static str },
+
+    #[error("{cli} could not summarize this meeting: {reason}")]
+    CliFailed { cli: &'static str, reason: String },
+
     #[error("there is nothing in this meeting to summarize")]
     NothingToSummarize,
 
     #[error("the model returned a summary with no content")]
     EmptySummary,
+}
+
+impl SummarizeError {
+    /// The same failure, safe to write to a log file.
+    ///
+    /// Two variants carry text this app did not write: `BadResponse` echoes a
+    /// provider's error description, and `CliFailed` echoes a line of some
+    /// local binary's stderr. Both are worth showing to the person whose
+    /// meeting it is — that is how they learn they are logged out — and
+    /// neither is worth putting on disk, because an agent CLI writes prompt
+    /// and reasoning text to stderr and the prompt is the transcript
+    /// (docs/CONVENTIONS.md § Privacy).
+    ///
+    /// So `Display` goes to the user and this goes to `log::`.
+    pub fn log_safe(&self) -> String {
+        match self {
+            SummarizeError::BadResponse { provider, .. } => {
+                format!("{provider} returned an unexpected response")
+            }
+            SummarizeError::CliFailed { cli, .. } => {
+                format!("{cli} could not summarize this meeting")
+            }
+            other => other.to_string(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -342,5 +389,37 @@ mod tests {
             provider: "anthropic",
         };
         assert_eq!(error.to_string(), "anthropic rejected the key");
+        assert_eq!(error.log_safe(), error.to_string());
+    }
+
+    #[test]
+    fn what_a_cli_wrote_reaches_the_user_but_never_a_log_file() {
+        // An agent CLI writes prompt and reasoning text to stderr, and the
+        // prompt is the transcript. The user needs to read it; the log file
+        // — the thing that gets attached to bug reports — must not.
+        let leaked = "prompt was: Leo said the merger closes on Friday (key sk-ant-0123)";
+        let error = SummarizeError::CliFailed {
+            cli: "claude",
+            reason: leaked.to_owned(),
+        };
+
+        assert!(
+            error.to_string().contains(leaked),
+            "the user must still see why it failed"
+        );
+
+        let logged = error.log_safe();
+        assert!(!logged.contains("merger"), "leaked to the log: {logged}");
+        assert!(!logged.contains("sk-ant"), "leaked to the log: {logged}");
+        assert!(logged.contains("claude"), "{logged}");
+    }
+
+    #[test]
+    fn a_providers_error_text_is_the_same_kind_of_secret() {
+        let error = SummarizeError::BadResponse {
+            provider: "groq",
+            reason: "your prompt beginning 'Leo said the merger' was rejected".to_owned(),
+        };
+        assert!(!error.log_safe().contains("merger"), "{}", error.log_safe());
     }
 }

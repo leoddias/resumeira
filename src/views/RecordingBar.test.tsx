@@ -4,10 +4,12 @@ import { describe, expect, it, vi } from 'vitest';
 import type { RecordingState } from '../ipc/types';
 import RecordingBar from './RecordingBar';
 
-function renderBar(state: RecordingState) {
+function renderBar(state: RecordingState, blockedReason?: string) {
   const onStart = vi.fn();
   const onStop = vi.fn();
-  render(<RecordingBar state={state} onStart={onStart} onStop={onStop} />);
+  render(
+    <RecordingBar state={state} onStart={onStart} onStop={onStop} blockedReason={blockedReason} />,
+  );
   return { onStart, onStop };
 }
 
@@ -69,6 +71,16 @@ describe('RecordingBar', () => {
   it('reports a failure instead of silently going idle', () => {
     renderBar({ status: 'failed', error: 'no input device' });
     expect(screen.getByText(/no input device/)).toBeInTheDocument();
+  });
+
+  it('refuses to start, with the reason visible, while setup is unfinished', async () => {
+    const { onStart } = renderBar({ status: 'idle' }, 'Finish setup before recording');
+
+    const start = screen.getByRole('button', { name: 'Start Recording' });
+    expect(start).toBeDisabled();
+    await userEvent.click(start);
+    expect(onStart).not.toHaveBeenCalled();
+    expect(screen.getByText('Finish setup before recording')).toBeInTheDocument();
   });
 
   it('says what it is doing after the meeting ends', () => {

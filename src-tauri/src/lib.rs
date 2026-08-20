@@ -12,6 +12,8 @@ pub mod live;
 pub mod meetings_commands;
 pub mod models_commands;
 pub mod pipeline;
+pub mod readiness;
+pub mod readiness_commands;
 pub mod recorder;
 pub mod secrets;
 pub mod session;
@@ -35,6 +37,28 @@ pub fn models_root<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> PathBuf {
             PathBuf::from("models")
         }
     }
+}
+
+/// Where an agent CLI is run from when it summarizes a meeting (ADR-0020).
+///
+/// An app-owned directory, never the user's project or home folder: an agent
+/// CLI reads instructions from whatever directory it starts in, and a
+/// meeting summary has no business inheriting some repository's context.
+pub fn cli_workdir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> PathBuf {
+    let root = match app.path().app_data_dir() {
+        Ok(dir) => dir.join("cli"),
+        Err(error) => {
+            log::warn!("no data directory ({error}); running the CLI next to the app");
+            PathBuf::from("cli")
+        }
+    };
+    if let Err(error) = std::fs::create_dir_all(&root) {
+        log::warn!(
+            "could not prepare the CLI working directory: {}",
+            error.kind()
+        );
+    }
+    root
 }
 
 /// Search index location under the app's data directory.
@@ -89,6 +113,7 @@ pub fn run() {
             models_commands::download_model,
             models_commands::delete_model,
             models_commands::open_models_folder,
+            readiness_commands::check_readiness,
         ])
         .setup(|app| {
             let settings = settings_commands::SettingsStore::load_from(

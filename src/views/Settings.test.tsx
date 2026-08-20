@@ -27,7 +27,9 @@ const { default: Settings } = await import('./Settings');
 const localSettings: SettingsType = {
   notesFolder: null,
   transcription: { engine: 'local', provider: 'groq', localModel: 'large-v3-turbo' },
+  summaryEngine: 'api',
   summaryProvider: 'anthropic',
+  summaryCli: 'claude',
   summaryModel: null,
   audioRetention: 'keep',
   telemetryOptIn: false,
@@ -162,6 +164,42 @@ describe('Settings', () => {
 
     await waitFor(() =>
       expect(screen.getByText(/Could not save settings: permission denied/)).toBeInTheDocument(),
+    );
+  });
+
+  it('says the CLI route leaves the machine, because "installed here" reads as private', async () => {
+    // ADR-0020: the CLI is labelled wherever the API route is. A user who
+    // pairs Local transcription with an agent CLI is otherwise told "local"
+    // twice for a path that uploads the whole transcript.
+    await renderReady({ ...localSettings, summaryEngine: 'cli' });
+
+    const warnings = screen.getAllByRole('alert').map((node) => node.textContent ?? '');
+    expect(warnings.join(' ')).toMatch(/not local/i);
+    expect(warnings.join(' ')).toMatch(/keeps its own copy/i);
+  });
+
+  it('offers the agent CLI instead of a provider and model when that engine is chosen', async () => {
+    await renderReady({ ...localSettings, summaryEngine: 'cli' });
+
+    expect(screen.getByLabelText('Agent CLI')).toHaveValue('claude');
+    // The API-only fields would be dead controls under this engine.
+    expect(screen.queryByLabelText('Summary provider')).toBeNull();
+    expect(screen.queryByLabelText('Summary model')).toBeNull();
+  });
+
+  it('saves the chosen agent CLI', async () => {
+    saveSettings.mockResolvedValue(undefined);
+    await renderReady({ ...localSettings, summaryEngine: 'cli' });
+
+    await userEvent.selectOptions(screen.getByLabelText('Agent CLI'), 'gemini');
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() =>
+      expect(saveSettings).toHaveBeenCalledWith({
+        ...localSettings,
+        summaryEngine: 'cli',
+        summaryCli: 'gemini',
+      }),
     );
   });
 

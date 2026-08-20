@@ -41,6 +41,20 @@ pub enum PipelineError {
     Storage(String),
 }
 
+impl PipelineError {
+    /// The same failure, safe to write to a log file.
+    ///
+    /// Only the summary step can carry text this app did not write — a
+    /// provider's error body or a CLI's stderr, either of which can quote the
+    /// transcript back. See [`SummarizeError::log_safe`].
+    pub fn log_safe(&self) -> String {
+        match self {
+            PipelineError::Summarize(error) => error.log_safe(),
+            other => other.to_string(),
+        }
+    }
+}
+
 /// Turns one track's audio file into a transcript.
 pub trait Transcriber {
     fn transcribe(

@@ -13,10 +13,27 @@ use tauri::{AppHandle, Emitter, Manager, Runtime};
 pub const RECORDING_STATE_EVENT: &str = "recording-state";
 
 /// Starts a recording, whatever asked for it.
+///
+/// Refuses when the configured pipeline cannot finish (ADR-0019). This is the
+/// one precondition worth blocking on: a meeting is the single input the user
+/// cannot produce again, so "record now, discover the model is missing later"
+/// is a failure with no recovery.
 pub fn start<R: Runtime>(app: &AppHandle<R>) -> RecordingState {
     let Some(manager) = app.try_state::<SessionManager>() else {
         return unavailable();
     };
+
+    // Only when nothing is running: readiness can flip mid-meeting (the user
+    // deletes the model in Settings), and publishing Failed over a live
+    // capture would park the UI in a state with no Stop button while the
+    // microphone is still recording.
+    if manager.state().can_start() {
+        if let Some(reason) = refusal(crate::readiness_commands::current(app).as_ref()) {
+            let state = manager.fail(reason);
+            publish(app, &state);
+            return state;
+        }
+    }
     let state = manager.start(now_ms());
     publish(app, &state);
     state
@@ -73,7 +90,14 @@ fn spawn_pipeline<R: Runtime>(app: AppHandle<R>, folder: std::path::PathBuf) {
         match outcome {
             Ok(title) => log::info!("note written for '{title}'"),
             Err(error) => {
-                log::warn!("could not turn the meeting into a note: {error}");
+                // The log gets the redacted form; the user gets the whole
+                // message, because it is their meeting (see
+                // `PipelineError::log_safe`).
+                log::warn!(
+                    "could not turn the meeting into a note: {}",
+                    error.log_safe()
+                );
+                let error = error.to_string();
                 // The recording itself is safe; say what failed rather than
                 // sliding back to idle as if nothing had happened.
                 if let Some(manager) = app.try_state::<SessionManager>() {
@@ -94,7 +118,7 @@ fn spawn_pipeline<R: Runtime>(app: AppHandle<R>, folder: std::path::PathBuf) {
 async fn run_pipeline<R: Runtime>(
     app: &AppHandle<R>,
     folder: &std::path::Path,
-) -> Result<String, String> {
+) -> Result<String, crate::pipeline::PipelineError> {
     let settings = app
         .try_state::<crate::settings_commands::SettingsStore>()
         .map(|store| store.get())
@@ -108,6 +132,7 @@ async fn run_pipeline<R: Runtime>(
         settings,
         secrets,
         models_root: crate::models_root(app),
+        cli_workdir: crate::cli_workdir(app),
     });
 
     let transcriber = crate::live::LiveTranscriber::new(context.clone());
@@ -125,8 +150,7 @@ async fn run_pipeline<R: Runtime>(
                 publish(&stage_app, &state);
             }
         })
-        .await
-        .map_err(|error| error.to_string())?;
+        .await?;
 
     // The index follows the file, never the other way round (ADR-0007). A
     // failed index costs search until the next rebuild, not the note.
@@ -145,6 +169,16 @@ fn publish<R: Runtime>(app: &AppHandle<R>, state: &RecordingState) {
         log::warn!("could not publish recording state: {error}");
     }
     tray::reflect_state(app, state);
+}
+
+/// Why this recording must not start, if it must not (ADR-0019).
+///
+/// `None` for a readiness that could not be resolved at all: refusing on an
+/// unresolvable verdict would let a broken app state quietly eat the record
+/// button, and the pipeline still reports the real failure afterwards with
+/// the audio safe on disk.
+fn refusal(readiness: Option<&crate::readiness::Readiness>) -> Option<String> {
+    crate::readiness_commands::blocked_reason(readiness?)
 }
 
 fn unavailable() -> RecordingState {
@@ -206,6 +240,39 @@ mod tests {
         // Well past 2020 and nowhere near saturating.
         assert!(now_ms() > 1_600_000_000_000);
         assert!(now_ms() < i64::MAX);
+    }
+
+    #[test]
+    fn a_pipeline_that_cannot_finish_refuses_the_recording() {
+        // The whole of ADR-0019 in one assertion: this is what stands between
+        // the record button and a meeting that cannot be turned into a note.
+        let blocked = readiness(false, false);
+        let reason = refusal(Some(&blocked)).expect("a blocked pipeline must refuse");
+        assert!(reason.contains("large-v3-turbo"), "{reason}");
+    }
+
+    #[test]
+    fn a_ready_pipeline_is_not_refused() {
+        assert_eq!(refusal(Some(&readiness(true, true))), None);
+    }
+
+    #[test]
+    fn an_unresolvable_readiness_does_not_eat_the_record_button() {
+        // Fail-open on purpose: a meeting recorded into a pipeline that later
+        // fails still leaves audio on disk, whereas a record button disabled
+        // by a broken app state leaves nothing at all.
+        assert_eq!(refusal(None), None);
+    }
+
+    fn readiness(model_installed: bool, key_stored: bool) -> crate::readiness::Readiness {
+        crate::readiness::evaluate(
+            &crate::config::Settings::default(),
+            &crate::readiness::Observed {
+                key_stored: &move |_| key_stored,
+                model_installed: &move |_| model_installed,
+                cli_available: &|_| false,
+            },
+        )
     }
 
     #[test]

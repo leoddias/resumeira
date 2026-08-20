@@ -1,16 +1,23 @@
 import { useState } from 'react';
+import { useReadiness, isBlocked } from './state/useReadiness';
 import { useRecording } from './state/useRecording';
-import FirstRun from './views/FirstRun';
 import Meetings from './views/Meetings';
 import Note from './views/Note';
 import RecordingBar from './views/RecordingBar';
 import Settings from './views/Settings';
+import Setup from './views/Setup';
 
 type View = { name: 'meetings' } | { name: 'note'; folder: string } | { name: 'settings' };
 
 export default function App() {
   const { state, start, stop } = useRecording();
+  const { state: readiness, recheck } = useReadiness();
   const [view, setView] = useState<View>({ name: 'meetings' });
+
+  // Recording is refused in Rust when the pipeline cannot finish (ADR-0019);
+  // this is the same verdict, shown before the click rather than after.
+  const blocked = isBlocked(readiness);
+  const showSetup = blocked && view.name !== 'settings';
 
   return (
     <main className="app">
@@ -34,15 +41,22 @@ export default function App() {
         </nav>
       </header>
 
-      <FirstRun />
+      <RecordingBar
+        state={state}
+        onStart={start}
+        onStop={stop}
+        blockedReason={blocked ? 'Finish setup before recording' : undefined}
+      />
 
-      <RecordingBar state={state} onStart={start} onStop={stop} />
+      {showSetup && readiness.status === 'ready' && (
+        <Setup readiness={readiness.readiness} onChanged={() => void recheck()} />
+      )}
 
-      {view.name === 'meetings' && (
+      {!showSetup && view.name === 'meetings' && (
         <Meetings onOpen={(folder) => setView({ name: 'note', folder })} />
       )}
 
-      {view.name === 'note' && (
+      {!showSetup && view.name === 'note' && (
         <>
           <button type="button" className="app__back" onClick={() => setView({ name: 'meetings' })}>
             ← All meetings
@@ -51,7 +65,7 @@ export default function App() {
         </>
       )}
 
-      {view.name === 'settings' && <Settings />}
+      {view.name === 'settings' && <Settings onChanged={() => void recheck()} />}
     </main>
   );
 }

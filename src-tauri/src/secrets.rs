@@ -45,6 +45,21 @@ pub trait SecretStore: Send + Sync {
     fn has(&self, account: &str) -> bool {
         matches!(self.get(account), Ok(secret) if !secret.is_empty())
     }
+
+    /// Whether a key is *known to be absent*.
+    ///
+    /// Distinct from `!has(..)`: a credential store that is momentarily
+    /// unreachable answers "I don't know", and the readiness gate must not
+    /// turn that into "you are not set up" and refuse to record a meeting
+    /// that cannot be re-run (ADR-0019). Only a definite `NotFound`, or a
+    /// stored-but-empty key, counts as missing.
+    fn is_definitely_missing(&self, account: &str) -> bool {
+        match self.get(account) {
+            Ok(secret) => secret.is_empty(),
+            Err(SecretError::NotFound { .. }) => true,
+            Err(_) => false,
+        }
+    }
 }
 
 /// The real store: Windows Credential Manager, macOS Keychain, Secret Service.
@@ -241,5 +256,49 @@ mod tests {
             SecretError::Unavailable.to_string(),
             "the system credential store is unavailable"
         );
+    }
+}
+
+#[cfg(test)]
+mod availability {
+    use super::*;
+
+    /// A store whose backend is down — every read fails the same way.
+    struct Unreachable;
+
+    impl SecretStore for Unreachable {
+        fn set(&self, _: &str, _: &str) -> Result<(), SecretError> {
+            Err(SecretError::Unavailable)
+        }
+        fn get(&self, _: &str) -> Result<String, SecretError> {
+            Err(SecretError::Unavailable)
+        }
+        fn delete(&self, _: &str) -> Result<(), SecretError> {
+            Err(SecretError::Unavailable)
+        }
+    }
+
+    #[test]
+    fn an_unreachable_store_is_not_the_same_as_no_key() {
+        let store = Unreachable;
+        assert!(
+            !store.has("groq"),
+            "nothing can be read, so nothing is known"
+        );
+        assert!(
+            !store.is_definitely_missing("groq"),
+            "'I cannot tell' must never become 'you are not set up' - that \
+             would refuse a meeting the user cannot record again"
+        );
+    }
+
+    #[test]
+    fn a_store_that_answers_reports_the_truth_either_way() {
+        let store = MemoryStore::default();
+        assert!(store.is_definitely_missing("groq"));
+
+        store.set("groq", "sk-test").expect("set");
+        assert!(!store.is_definitely_missing("groq"));
+        assert!(store.has("groq"));
     }
 }

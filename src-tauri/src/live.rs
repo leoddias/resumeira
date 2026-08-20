@@ -8,7 +8,7 @@ use crate::audio::{decoder, Track};
 use crate::config::Settings;
 use crate::pipeline::{Summarizer, Transcriber};
 use crate::secrets::SecretStore;
-use crate::summarize::{self, SummarizeError, Summary};
+use crate::summarize::{self, cli, SummarizeError, Summary, SummaryEngine};
 use crate::transcribe::routing::{self, Capabilities, Route};
 use crate::transcribe::{api, local, model, Engine, TranscribeError, Transcript};
 use std::path::{Path, PathBuf};
@@ -19,6 +19,10 @@ pub struct LiveContext {
     pub settings: Settings,
     pub secrets: Arc<dyn SecretStore>,
     pub models_root: PathBuf,
+    /// Neutral directory an agent CLI is run from. Never one of the user's
+    /// project folders: a CLI started there would read that project's
+    /// instructions as context for a meeting they have nothing to do with.
+    pub cli_workdir: PathBuf,
 }
 
 impl LiveContext {
@@ -91,6 +95,25 @@ impl Transcriber for LiveTranscriber {
     }
 }
 
+/// The engine that will write the notes, resolved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SummarySource {
+    Api(crate::summarize::SummaryProvider),
+    Cli(cli::AgentCli),
+}
+
+/// Reads the user's choice of summary engine, and nothing else.
+///
+/// Pure and separate from running it so ADR-0020's rule — the engine is
+/// whatever the user chose, never what happens to be available — is a tested
+/// fact rather than a `match` arm nobody exercises.
+pub fn summary_source(settings: &Settings) -> SummarySource {
+    match settings.summary_engine {
+        SummaryEngine::Api => SummarySource::Api(settings.summary_provider),
+        SummaryEngine::Cli => SummarySource::Cli(settings.summary_cli),
+    }
+}
+
 /// Summarizes with the user's chosen provider and key.
 pub struct LiveSummarizer {
     context: Arc<LiveContext>,
@@ -104,19 +127,31 @@ impl LiveSummarizer {
 
 impl Summarizer for LiveSummarizer {
     async fn summarize(&self, transcript: &Transcript) -> Result<Summary, SummarizeError> {
-        let provider = self.context.settings.summary_provider;
-        let model = self.context.settings.effective_summary_model();
-
-        let key = self.context.secrets.get(provider.key_name()).map_err(|_| {
-            SummarizeError::MissingKey {
-                provider: provider.key_name(),
-            }
-        })?;
-
+        let settings = &self.context.settings;
+        let model = settings.effective_summary_model();
         let messages = summarize::prompt::build(transcript, &summarize::prompt::SummaryOptions {});
-        let reply = summarize::providers::complete(provider, &key, Some(&model), &messages).await?;
 
-        summarize::parse::parse_summary(provider.key_name(), &model, &reply).map(Summary::cleaned)
+        // The engine is whatever the user chose, and only that. A missing key
+        // never reaches for an installed CLI, and a missing CLI never reaches
+        // for a key (ADR-0020).
+        let (source, reply) = match summary_source(settings) {
+            SummarySource::Api(provider) => {
+                let key = self.context.secrets.get(provider.key_name()).map_err(|_| {
+                    SummarizeError::MissingKey {
+                        provider: provider.key_name(),
+                    }
+                })?;
+                let reply =
+                    summarize::providers::complete(provider, &key, Some(&model), &messages).await?;
+                (provider.key_name(), reply)
+            }
+            SummarySource::Cli(which) => {
+                let reply = cli::complete(which, &self.context.cli_workdir, &messages).await?;
+                (which.id(), reply)
+            }
+        };
+
+        summarize::parse::parse_summary(source, &model, &reply).map(Summary::cleaned)
     }
 }
 
@@ -140,6 +175,7 @@ mod tests {
             settings,
             secrets: Arc::new(store),
             models_root,
+            cli_workdir: PathBuf::from("cli"),
         }
     }
 
@@ -201,6 +237,38 @@ mod tests {
             ctx.route(),
             Err(TranscribeError::ModelMissing { .. })
         ));
+    }
+
+    #[test]
+    fn a_cli_engine_is_used_even_when_every_key_is_available() {
+        // The failure this forbids: routing a CLI user down the API arm,
+        // which would report "no API key" to someone who deliberately has
+        // none and chose a CLI for exactly that reason (ADR-0020).
+        let settings = Settings {
+            summary_engine: SummaryEngine::Cli,
+            summary_cli: cli::AgentCli::Gemini,
+            summary_provider: crate::summarize::SummaryProvider::OpenAi,
+            ..Settings::default()
+        };
+        assert_eq!(
+            summary_source(&settings),
+            SummarySource::Cli(cli::AgentCli::Gemini)
+        );
+    }
+
+    #[test]
+    fn an_api_engine_is_used_even_when_a_cli_is_installed() {
+        let settings = Settings {
+            summary_engine: SummaryEngine::Api,
+            summary_provider: crate::summarize::SummaryProvider::Groq,
+            // Left over from a previous choice: it must not win.
+            summary_cli: cli::AgentCli::Claude,
+            ..Settings::default()
+        };
+        assert_eq!(
+            summary_source(&settings),
+            SummarySource::Api(crate::summarize::SummaryProvider::Groq)
+        );
     }
 
     #[test]

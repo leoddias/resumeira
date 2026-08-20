@@ -6,6 +6,12 @@ interface Props {
   state: RecordingState;
   onStart: () => void;
   onStop: () => void;
+  /**
+   * Why recording is unavailable, when it is. Rust refuses to start in this
+   * case anyway (ADR-0019); showing it here means the user reads the reason
+   * instead of clicking a button that appears to do nothing.
+   */
+  blockedReason?: string;
 }
 
 /**
@@ -13,7 +19,7 @@ interface Props {
  * comes from Rust via `useRecording`, so this renders without any IPC and
  * can be tested directly.
  */
-export default function RecordingBar({ state, onStart, onStop }: Props) {
+export default function RecordingBar({ state, onStart, onStop, blockedReason }: Props) {
   const elapsed = useElapsed(state);
 
   return (
@@ -24,8 +30,18 @@ export default function RecordingBar({ state, onStart, onStop }: Props) {
         <span className="recording-bar__elapsed">{formatElapsed(elapsed)}</span>
       )}
       {state.status === 'recording' && <TrackList tracks={state.tracks} />}
+      {blockedReason !== undefined && (
+        <span className="recording-bar__blocked" role="alert">
+          {blockedReason}
+        </span>
+      )}
       <div className="recording-bar__actions">
-        <button type="button" onClick={onStart} disabled={!canStart(state)}>
+        <button
+          type="button"
+          onClick={onStart}
+          disabled={!canStart(state) || blockedReason !== undefined}
+          title={blockedReason}
+        >
           Start Recording
         </button>
         <button type="button" onClick={onStop} disabled={!canStop(state)}>

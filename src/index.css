@@ -88,6 +88,12 @@ body {
   color: var(--accent);
 }
 
+/* Why the Start button is dead, stated where the button is. */
+.recording-bar__blocked {
+  color: var(--accent);
+  font-size: 0.875rem;
+}
+
 .recording-bar__actions {
   display: flex;
   gap: 0.5rem;
@@ -351,9 +357,20 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-/* First-run onboarding */
+/* Every route that sends meeting content anywhere says so, in the same voice. */
+.settings__summary-warning {
+  margin: 0;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: rgb(217 83 79 / 12%);
+  color: var(--fg);
+  max-width: 44rem;
+}
 
-.first-run {
+/* Setup gate */
+
+.setup {
   display: flex;
   flex-direction: column;
   gap: 1rem;
@@ -364,25 +381,73 @@ body {
   background: #1a1b21;
 }
 
-.first-run h2 {
+.setup h2,
+.setup h3 {
   margin: 0;
 }
 
-.first-run__steps {
+.setup__why {
   margin: 0;
-  padding-left: 1.25rem;
+  color: var(--muted);
+}
+
+.setup__step {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
+  padding: 1rem;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+}
+
+/* A step that is already fine should read as settled, not as another task. */
+.setup__step--ready {
+  border-color: #2a2b33;
+  color: var(--muted);
+}
+
+.setup__detail {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+.setup__leaves {
+  color: var(--accent);
+}
+
+.setup__fix,
+.setup__clis {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+
+.setup__fix button,
+.setup__key button {
+  padding: 0.4rem 0.8rem;
+  border: 1px solid #35363f;
+  border-radius: 6px;
+  background: #1d1e25;
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.setup__key {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
 }
 
 /*
- * There is no local summarizer, so summarizing always sends the transcript
- * to a cloud LLM. Someone who installed this believing nothing ever leaves
- * their machine has to learn it here, before their first meeting — so this
- * gets the same weight as the cloud warning in Settings.
+ * There is no local summarizer, so writing the notes always sends the
+ * transcript to a model — through an API key or through an agent CLI signed
+ * in on this machine. Someone who installed this believing nothing ever
+ * leaves their machine has to learn it here, before their first meeting, so
+ * it gets the same weight as the cloud warning in Settings.
  */
-.first-run__cloud-notice {
+.setup__cloud-notice {
   margin: 0;
   padding: 0.75rem 1rem;
   border: 1px solid var(--accent);
@@ -391,20 +456,14 @@ body {
   color: var(--fg);
 }
 
-.first-run__mic-notice {
+.setup__facts {
   margin: 0;
+  padding-left: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
   color: var(--muted);
   font-size: 0.875rem;
-}
-
-.first-run__skip {
-  align-self: flex-start;
-  padding: 0.4rem 0.8rem;
-  border: 1px solid #35363f;
-  border-radius: 6px;
-  background: #1d1e25;
-  color: var(--fg);
-  cursor: pointer;
 }
 
 /* Model manager */

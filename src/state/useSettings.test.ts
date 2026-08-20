@@ -21,7 +21,9 @@ const { useSettings } = await import('./useSettings');
 const settings: Settings = {
   notesFolder: null,
   transcription: { engine: 'local', provider: 'groq', localModel: 'large-v3-turbo' },
+  summaryEngine: 'api',
   summaryProvider: 'anthropic',
+  summaryCli: 'claude',
   summaryModel: null,
   audioRetention: 'keep',
   telemetryOptIn: false,

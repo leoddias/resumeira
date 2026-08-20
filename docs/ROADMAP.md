@@ -188,3 +188,26 @@ travels the whole path: WASAPI loopback, resampling to 16 kHz mono, Opus
 encoding, decoding back, and into `notes.md`. The same run recorded the
 microphone at peak 0.0, which is this machine's virtual input device having
 no source, not a fault in the capture path.
+
+## Backlog found while adding the setup gate (2026-08-20)
+
+- **`codex` and `gemini` invocations are unverified.** Only `claude -p` was
+  run against a real binary; the other two CLIs' argument shapes
+  (`codex exec -`, piped `gemini`) come from their docs, not from a run. A
+  wrong shape surfaces as a visible `CliFailed`, never a silent empty note,
+  but the first user to pick one pays for it. Verify before the dogfood gate.
+- A CLI's stderr can be a whole stack trace; only its first line reaches the
+  user. If the useful part is on line two, the error reads as noise.
+- Readiness is pull-only: the frontend re-asks after its own actions. A model
+  deleted outside the app, or a key removed from the OS keychain, is noticed
+  at the next check rather than immediately.
+- **A failed summary discards the transcript.** `pipeline.rs` writes the note
+  only after summarization succeeds, and nothing can re-run a summary, so a
+  CLI that fails costs the whole transcription. Audio survives under the
+  default `Keep` retention, so it is recoverable — but "re-run the summary
+  for this meeting" is now worth more than it was, because the CLI path adds
+  a failure surface the API path does not have.
+- `kill_on_drop` covers a timeout and a normal quit, but killing Resumeira
+  from Task Manager leaves the CLI running with the transcript in memory.
+- Readiness proves an agent CLI exists on the PATH, not that it is signed in.
+  The Setup copy says so; a real probe would cost a process spawn per launch.

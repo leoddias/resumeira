@@ -1,11 +1,14 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import {
   accountFor,
+  AGENT_CLIS,
   requiredTranscriptionAccount,
   sendsAudioToTheCloud,
+  type AgentCli,
   type AudioRetention,
   type KeyStatus,
   type Settings,
+  type SummaryEngine,
   type SummaryProvider,
   type TranscriptionEngine,
   type WhisperApiProvider,
@@ -26,8 +29,16 @@ const KEY_PROVIDERS: { id: WhisperApiProvider | SummaryProvider; label: string }
  * Owns its own state via `useSettings`; IPC is stubbed in tests with
  * `vi.mock('../ipc/settings', ...)`.
  */
-export default function Settings() {
+export default function Settings({ onChanged }: { onChanged?: () => void } = {}) {
   const { load, keys, saveState, save, saveKey, removeKey, reload } = useSettings();
+
+  // Anything saved here can decide whether the app is able to record at all,
+  // so whoever owns the readiness check has to be told (ADR-0019).
+  async function announce<T>(action: Promise<T>): Promise<T> {
+    const result = await action;
+    onChanged?.();
+    return result;
+  }
 
   if (load.status === 'loading') {
     return <p className="status">Loading settings…</p>;
@@ -49,9 +60,10 @@ export default function Settings() {
       settings={load.settings}
       keys={keys}
       saveState={saveState}
-      onSave={save}
-      onSaveKey={saveKey}
-      onRemoveKey={removeKey}
+      onSave={(next) => void announce(save(next))}
+      onSaveKey={(account, key) => announce(saveKey(account, key))}
+      onRemoveKey={(account) => announce(removeKey(account))}
+      onModelsChanged={() => onChanged?.()}
     />
   );
 }
@@ -63,9 +75,18 @@ interface FormProps {
   onSave: (settings: Settings) => void;
   onSaveKey: (account: string, key: string) => Promise<KeyStatus>;
   onRemoveKey: (account: string) => Promise<KeyStatus>;
+  onModelsChanged: () => void;
 }
 
-function SettingsForm({ settings, keys, saveState, onSave, onSaveKey, onRemoveKey }: FormProps) {
+function SettingsForm({
+  settings,
+  keys,
+  saveState,
+  onSave,
+  onSaveKey,
+  onRemoveKey,
+  onModelsChanged,
+}: FormProps) {
   const [draft, setDraft] = useState<Settings>(settings);
   const [missingKeyWarning, setMissingKeyWarning] = useState<string | undefined>(undefined);
 
@@ -112,6 +133,20 @@ function SettingsForm({ settings, keys, saveState, onSave, onSaveKey, onRemoveKe
           This configuration sends your meeting audio to the cloud for transcription.
         </p>
       )}
+
+      {/*
+       * There is no local note writer, and an agent CLI is not one either: it
+       * sends the transcript to a frontier model under the user's own
+       * subscription, and keeps its own copy of it. "Installed here" reads as
+       * "private" next to a Local transcription engine, so this says
+       * otherwise — ADR-0020 requires the CLI route to be labelled wherever
+       * the API route is.
+       */}
+      <p className="settings__summary-warning" role="alert">
+        {draft.summaryEngine === 'cli'
+          ? 'Writing the notes sends the transcript to the agent CLI you pick. That is not local: it goes to that CLI’s provider under your account, and the CLI keeps its own copy in its history.'
+          : 'Writing the notes sends the transcript to your summary provider. Resumeira has no local note writer.'}
+      </p>
 
       <label className="settings__field">
         <span>Notes folder</span>
@@ -183,33 +218,64 @@ function SettingsForm({ settings, keys, saveState, onSave, onSaveKey, onRemoveKe
       )}
 
       <label className="settings__field">
-        <span>Summary provider</span>
+        <span>Notes written by</span>
         <select
-          value={draft.summaryProvider}
+          value={draft.summaryEngine}
           onChange={(event) =>
-            setDraft({ ...draft, summaryProvider: event.target.value as SummaryProvider })
+            setDraft({ ...draft, summaryEngine: event.target.value as SummaryEngine })
           }
         >
-          <option value="anthropic">Anthropic</option>
-          <option value="openAi">OpenAI</option>
-          <option value="groq">Groq</option>
+          <option value="api">A cloud API (needs a key)</option>
+          <option value="cli">An agent CLI installed here (uses your subscription)</option>
         </select>
       </label>
 
-      <label className="settings__field">
-        <span>Summary model</span>
-        <input
-          type="text"
-          placeholder="Provider default"
-          value={draft.summaryModel ?? ''}
-          onChange={(event) =>
-            setDraft({
-              ...draft,
-              summaryModel: event.target.value === '' ? null : event.target.value,
-            })
-          }
-        />
-      </label>
+      {draft.summaryEngine === 'cli' ? (
+        <label className="settings__field">
+          <span>Agent CLI</span>
+          <select
+            value={draft.summaryCli}
+            onChange={(event) => setDraft({ ...draft, summaryCli: event.target.value as AgentCli })}
+          >
+            {AGENT_CLIS.map(({ id, label }) => (
+              <option key={id} value={id}>
+                {label}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : (
+        <>
+          <label className="settings__field">
+            <span>Summary provider</span>
+            <select
+              value={draft.summaryProvider}
+              onChange={(event) =>
+                setDraft({ ...draft, summaryProvider: event.target.value as SummaryProvider })
+              }
+            >
+              <option value="anthropic">Anthropic</option>
+              <option value="openAi">OpenAI</option>
+              <option value="groq">Groq</option>
+            </select>
+          </label>
+
+          <label className="settings__field">
+            <span>Summary model</span>
+            <input
+              type="text"
+              placeholder="Provider default"
+              value={draft.summaryModel ?? ''}
+              onChange={(event) =>
+                setDraft({
+                  ...draft,
+                  summaryModel: event.target.value === '' ? null : event.target.value,
+                })
+              }
+            />
+          </label>
+        </>
+      )}
 
       <label className="settings__field">
         <span>Audio retention</span>
@@ -235,7 +301,7 @@ function SettingsForm({ settings, keys, saveState, onSave, onSaveKey, onRemoveKe
 
       <ApiKeys keys={keys} onSaveKey={onSaveKey} onRemoveKey={onRemoveKey} />
 
-      <ModelManager />
+      <ModelManager onChanged={onModelsChanged} />
 
       {missingKeyWarning !== undefined && (
         <div className="settings__key-warning" role="alert">

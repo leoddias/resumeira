@@ -11,7 +11,18 @@ import { invoke } from '@tauri-apps/api/core';
 export type TranscriptionEngine = 'local' | 'api';
 export type WhisperApiProvider = 'groq' | 'openAi';
 export type SummaryProvider = 'anthropic' | 'openAi' | 'groq';
+/** Where the summary comes from: a cloud API key, or an installed CLI. */
+export type SummaryEngine = 'api' | 'cli';
+/** An agent CLI the app can drive to write the notes (ADR-0020). */
+export type AgentCli = 'claude' | 'codex' | 'gemini';
 export type AudioRetention = 'keep' | 'deleteAfterTranscription';
+
+/** Every CLI the app knows how to drive, with the name a person reads. */
+export const AGENT_CLIS: { id: AgentCli; label: string }[] = [
+  { id: 'claude', label: 'Claude Code' },
+  { id: 'codex', label: 'Codex CLI' },
+  { id: 'gemini', label: 'Gemini CLI' },
+];
 
 export interface TranscriptionSettings {
   engine: TranscriptionEngine;
@@ -24,7 +35,11 @@ export interface Settings {
   /** Where meetings are written. Null means the default location. */
   notesFolder: string | null;
   transcription: TranscriptionSettings;
+  /** Whether the notes are written by a cloud API or by an installed CLI. */
+  summaryEngine: SummaryEngine;
   summaryProvider: SummaryProvider;
+  /** The CLI used when `summaryEngine` is `cli`. */
+  summaryCli: AgentCli;
   /** Null uses the provider's default model. */
   summaryModel: string | null;
   audioRetention: AudioRetention;
@@ -98,7 +113,12 @@ export function requiredTranscriptionAccount(settings: Settings): string | undef
     : undefined;
 }
 
-/** The keychain account the summary provider needs a key for. */
-export function requiredSummaryAccount(settings: Settings): string {
-  return accountFor(settings.summaryProvider);
+/**
+ * The keychain account the summary step needs a key for.
+ *
+ * Undefined when the notes come from an agent CLI: that path bills the
+ * user's own subscription and needs no key at all (ADR-0020).
+ */
+export function requiredSummaryAccount(settings: Settings): string | undefined {
+  return settings.summaryEngine === 'cli' ? undefined : accountFor(settings.summaryProvider);
 }

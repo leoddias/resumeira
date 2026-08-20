@@ -10,7 +10,9 @@ import {
 const local: Settings = {
   notesFolder: null,
   transcription: { engine: 'local', provider: 'groq', localModel: 'large-v3-turbo' },
+  summaryEngine: 'api',
   summaryProvider: 'anthropic',
+  summaryCli: 'claude',
   summaryModel: null,
   audioRetention: 'keep',
   telemetryOptIn: false,
@@ -51,5 +53,12 @@ describe('settings contract', () => {
   it('always needs a summary key, whatever the transcription engine', () => {
     expect(requiredSummaryAccount(local)).toBe('anthropic');
     expect(requiredSummaryAccount({ ...local, summaryProvider: 'openAi' })).toBe('openai');
+  });
+
+  it('needs no summary key at all when an agent CLI writes the notes', () => {
+    // The point of the CLI engine: a user with no API key is not stuck
+    // (ADR-0020). Reporting a required account here would keep the setup
+    // screen demanding a key they do not need.
+    expect(requiredSummaryAccount({ ...local, summaryEngine: 'cli' })).toBeUndefined();
   });
 });

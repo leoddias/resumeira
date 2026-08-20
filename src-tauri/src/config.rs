@@ -8,7 +8,7 @@
 //! defaults with a warning rather than refusing to start. Settings are not
 //! worth losing a meeting over — the user can hit record either way.
 
-use crate::summarize::SummaryProvider;
+use crate::summarize::{cli::AgentCli, SummaryEngine, SummaryProvider};
 use crate::transcribe::routing::TranscriptionSettings;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -32,7 +32,13 @@ pub struct Settings {
     /// Where meetings are written. Empty means "use the default location".
     pub notes_folder: Option<PathBuf>,
     pub transcription: TranscriptionSettings,
+    /// Whether the summary comes from a cloud API or an installed agent CLI
+    /// (ADR-0020). Kept beside the two engine-specific fields rather than
+    /// replacing them, so switching engines does not lose the other's setup.
+    pub summary_engine: SummaryEngine,
     pub summary_provider: SummaryProvider,
+    /// The CLI used when `summary_engine` is `Cli`.
+    pub summary_cli: AgentCli,
     /// Model override; `None` uses the provider's default.
     pub summary_model: Option<String>,
     pub audio_retention: AudioRetention,
@@ -46,7 +52,9 @@ impl Default for Settings {
         Self {
             notes_folder: None,
             transcription: TranscriptionSettings::default(),
+            summary_engine: SummaryEngine::Api,
             summary_provider: SummaryProvider::Anthropic,
+            summary_cli: AgentCli::Claude,
             summary_model: None,
             audio_retention: AudioRetention::Keep,
             telemetry_opt_in: false,
@@ -56,7 +64,15 @@ impl Default for Settings {
 
 impl Settings {
     /// The model to summarize with, honouring an override.
+    ///
+    /// A CLI chooses its own model per invocation and does not report which
+    /// one it used, so the note's provenance names the CLI instead of a model
+    /// id nobody verified.
     pub fn effective_summary_model(&self) -> String {
+        if self.summary_engine == SummaryEngine::Cli {
+            return self.summary_cli.model_label();
+        }
+
         self.summary_model
             .as_deref()
             .map(str::trim)
@@ -227,6 +243,51 @@ mod tests {
 
         settings.summary_model = Some(" custom-model ".to_owned());
         assert_eq!(settings.effective_summary_model(), "custom-model");
+    }
+
+    #[test]
+    fn a_settings_file_written_before_cli_summaries_still_uses_an_api_key() {
+        // Upgrading must not move anyone's summaries onto a CLI they never
+        // chose — the engine is explicit, in both directions (ADR-0020).
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, r#"{ "summaryProvider": "groq" }"#).expect("write");
+
+        let settings = load(&path);
+        assert_eq!(settings.summary_engine, SummaryEngine::Api);
+        assert_eq!(settings.summary_provider, SummaryProvider::Groq);
+    }
+
+    #[test]
+    fn a_cli_summary_records_the_cli_as_its_provenance() {
+        let settings = Settings {
+            summary_engine: SummaryEngine::Cli,
+            summary_cli: AgentCli::Claude,
+            // Left over from the API engine: it must not be reported as the
+            // model that wrote a note the CLI wrote.
+            summary_model: Some("claude-sonnet-5".to_owned()),
+            ..Settings::default()
+        };
+        assert_eq!(settings.effective_summary_model(), "claude (cli)");
+    }
+
+    #[test]
+    fn choosing_a_cli_keeps_the_api_setup_for_when_the_user_switches_back() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("config.json");
+
+        let settings = Settings {
+            summary_engine: SummaryEngine::Cli,
+            summary_cli: AgentCli::Gemini,
+            summary_provider: SummaryProvider::OpenAi,
+            summary_model: Some("gpt-5".to_owned()),
+            ..Settings::default()
+        };
+        save(&path, &settings).expect("save");
+
+        let reloaded = load(&path);
+        assert_eq!(reloaded, settings);
+        assert_eq!(reloaded.summary_provider, SummaryProvider::OpenAi);
     }
 
     #[test]

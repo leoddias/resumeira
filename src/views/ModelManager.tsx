@@ -10,8 +10,15 @@ import { useModels, type DeleteState, type DownloadState } from '../state/useMod
  * Owns its own state via `useModels`; IPC is stubbed in tests with
  * `vi.mock('../ipc/models', ...)`.
  */
-export default function ModelManager() {
+export default function ModelManager({ onChanged }: { onChanged?: () => void } = {}) {
   const { load, downloads, deletes, download, remove, openFolder, refresh } = useModels();
+
+  // Installing or deleting a model can be exactly what unblocks (or blocks)
+  // recording, so whoever is showing this needs to hear about it.
+  async function changed(action: Promise<void>) {
+    await action;
+    onChanged?.();
+  }
 
   return (
     <div className="model-manager">
@@ -41,8 +48,8 @@ export default function ModelManager() {
               model={model}
               downloadState={downloads[model.id] ?? { status: 'idle' }}
               deleteState={deletes[model.id] ?? { status: 'idle' }}
-              onDownload={() => void download(model.id)}
-              onDelete={() => void remove(model.id)}
+              onDownload={() => void changed(download(model.id))}
+              onDelete={() => void changed(remove(model.id))}
             />
           ))}
         </ul>
