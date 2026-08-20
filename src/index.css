@@ -238,3 +238,115 @@ body {
   color: var(--muted);
   font-size: 0.875rem;
 }
+
+/* App shell */
+
+.app__header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.app__nav {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.app__nav button,
+.app__back {
+  padding: 0.35rem 0.7rem;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.app__nav button[aria-current='page'] {
+  color: var(--fg);
+  border-color: #35363f;
+  background: #1d1e25;
+}
+
+.app__back {
+  margin-bottom: 1rem;
+}
+
+/* Settings */
+
+.settings {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  max-width: 44rem;
+}
+
+.settings__field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.settings__field--checkbox {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.settings__field input,
+.settings__field select {
+  padding: 0.45rem 0.6rem;
+  border: 1px solid #35363f;
+  border-radius: 6px;
+  background: #1d1e25;
+  color: var(--fg);
+  font: inherit;
+}
+
+/*
+ * The one banner in this app that must be impossible to miss. A user
+ * discovering by accident that their meetings were being uploaded is the
+ * failure the whole product exists to prevent (ADR-0005), so this reads as
+ * a statement of fact, not a subtle hint.
+ */
+.settings__cloud-warning {
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: rgb(217 83 79 / 12%);
+  color: var(--fg);
+}
+
+.settings__key-warning,
+.settings__save-error,
+.settings-error {
+  color: var(--accent);
+}
+
+.settings__keys {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1rem;
+  border: 1px solid #2a2b33;
+  border-radius: 8px;
+}
+
+.settings__key {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.settings__key-label {
+  min-width: 6rem;
+}
+
+.settings__key-status {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
