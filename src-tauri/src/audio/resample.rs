@@ -21,12 +21,24 @@ use super::{AudioChunk, TARGET_SAMPLE_RATE};
 /// anyway (ADR-0004). A future milestone can swap in a proper sinc resampler
 /// behind this same function signature without touching callers.
 ///
-/// Never panics. Malformed input (zero channels, zero sample rate, empty
-/// samples, or a sample count that isn't a multiple of `channels`) returns
-/// an empty buffer instead.
+/// Sample rates outside this range are treated as malformed input rather
+/// than resampled: no real audio device reports a rate outside it, and
+/// honoring a bogus tiny rate (e.g. misreported as `1` Hz against a normal-
+/// sized buffer) would blow the output-length computation up to gigabytes,
+/// turning one bad chunk into a multi-gigabyte allocation on the audio
+/// thread. Range covers everything from telephony (8 kHz) to high-end
+/// interfaces (384 kHz) with margin.
+const PLAUSIBLE_SAMPLE_RATE_HZ: std::ops::RangeInclusive<u32> = 1_000..=384_000;
+
+/// Never panics. Malformed input (zero channels, an implausible sample rate,
+/// empty samples, or a sample count that isn't a multiple of `channels`)
+/// returns an empty buffer instead.
 pub fn to_target_mono(chunk: &AudioChunk) -> Vec<f32> {
     let channels = chunk.channels as usize;
-    if channels == 0 || chunk.sample_rate == 0 || chunk.samples.is_empty() {
+    if channels == 0
+        || !PLAUSIBLE_SAMPLE_RATE_HZ.contains(&chunk.sample_rate)
+        || chunk.samples.is_empty()
+    {
         return Vec::new();
     }
 
@@ -48,9 +60,17 @@ pub fn to_target_mono(chunk: &AudioChunk) -> Vec<f32> {
     resample_linear(&mono, chunk.sample_rate, TARGET_SAMPLE_RATE)
 }
 
+/// Caller-independent ceiling on how much a resample is allowed to grow the
+/// buffer. `to_target_mono` already rejects implausible sample rates before
+/// calling this, but this second check is cheap defense in depth: whatever
+/// the future caller, one chunk can never demand a runaway allocation.
+const MAX_UPSAMPLE_FACTOR: f64 = 32.0;
+
 /// Linearly resamples `input` (mono, at `from_rate` Hz) to `to_rate` Hz.
 ///
-/// Never panics: a zero rate or empty input returns an empty buffer.
+/// Never panics: a zero rate, an empty input, or an upsample ratio beyond
+/// [`MAX_UPSAMPLE_FACTOR`] returns an empty buffer instead of allocating an
+/// unbounded output.
 fn resample_linear(input: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
     if input.is_empty() || from_rate == 0 || to_rate == 0 {
         return Vec::new();
@@ -61,6 +81,10 @@ fn resample_linear(input: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
     }
 
     let ratio = from_rate as f64 / to_rate as f64;
+    if ratio > 0.0 && 1.0 / ratio > MAX_UPSAMPLE_FACTOR {
+        return Vec::new();
+    }
+
     let out_len = ((input.len() as f64) / ratio).round() as usize;
     if out_len == 0 {
         return Vec::new();
@@ -183,6 +207,29 @@ mod tests {
         let chunk = AudioChunk {
             samples: vec![0.0; 100],
             sample_rate: 0,
+            channels: 1,
+        };
+        assert!(to_target_mono(&chunk).is_empty());
+    }
+
+    #[test]
+    fn implausibly_low_sample_rate_returns_empty_without_huge_allocation() {
+        // A misreported near-zero rate against a normal-sized buffer would,
+        // without a bound, demand an output hundreds of millions of samples
+        // long. This must be rejected as malformed, not allocated.
+        let chunk = AudioChunk {
+            samples: vec![0.0; 48_000],
+            sample_rate: 1,
+            channels: 1,
+        };
+        assert!(to_target_mono(&chunk).is_empty());
+    }
+
+    #[test]
+    fn implausibly_high_sample_rate_returns_empty() {
+        let chunk = AudioChunk {
+            samples: vec![0.0; 100],
+            sample_rate: u32::MAX,
             channels: 1,
         };
         assert!(to_target_mono(&chunk).is_empty());
