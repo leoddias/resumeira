@@ -21,11 +21,11 @@ never the privacy rules or the test bar.
 - [x] System capture via WASAPI loopback, behind a `SystemCapture` trait with
       non-Windows stubs
 - [x] Resample any input to 16 kHz mono (unit tests on synthetic buffers)
-- [ ] Opus encoder writing `.opus` incrementally (unit tests: header, flush,
+- [x] Opus encoder writing `.opus` incrementally (unit tests: header, flush,
       byte budget for a synthetic minute)
 - [x] `recorder.rs`: start/stop session, two tracks, folder creation,
       crash-safe incremental flush (unit tests on temp dirs)
-- [ ] Tray Start/Stop wired to a real session; recording state pushed to UI
+- [x] Tray Start/Stop wired to a real session; recording state pushed to UI
 - [x] Mixer: two tracks → one 16 kHz mono buffer for transcription (unit tests)
 
 ### M2 — Transcription
