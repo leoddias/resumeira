@@ -151,3 +151,19 @@ To enable it:
 Until step 5 has actually run once, treat the release pipeline as untested:
 the workflow's YAML, action versions and build commands were verified, but
 no tag has ever been pushed through it.
+
+## Verified against real hardware
+
+`cargo test --manifest-path src-tauri/Cargo.toml --test end_to_end -- --ignored --nocapture`
+records three seconds from the real microphone and loopback device, encodes
+to Opus, decodes it back, and drives the real pipeline to a written note
+(transcription and summarization stubbed, since a model is 1.6 GB and an LLM
+needs a key).
+
+It exists because unit tests have now hidden three separate app-breaking
+bugs: capture forcing a sample rate no device offered, a first-error rule
+that would have killed the microphone every meeting, and track writers being
+opened one directory above the meeting folder so every meeting reported "no
+audio was recorded". None of the three was visible to a green suite.
+
+Run it after any change to capture, encoding, the recorder, or the pipeline.
