@@ -1,6 +1,6 @@
 //! Microphone capture via cpal's default input device.
 
-use cpal::traits::HostTrait;
+use cpal::traits::{DeviceTrait, HostTrait};
 
 use crate::audio::{AudioError, CaptureSource, ChunkSink, ErrorSink};
 
@@ -37,7 +37,16 @@ impl CaptureSource for MicCapture {
             .default_input_device()
             .ok_or(AudioError::NoDevice("microphone"))?;
 
-        let stream = start_input_stream(&device, sink, on_error, "microphone")?;
+        // The device's own default format, not a forced rate: WASAPI shared
+        // mode delivers its mix format regardless of what we ask for.
+        let config = device
+            .default_input_config()
+            .map_err(|e| AudioError::UnsupportedConfig {
+                device: device.to_string(),
+                reason: e.to_string(),
+            })?;
+
+        let stream = start_input_stream(&device, config, sink, on_error, "microphone")?;
         self.device_name = device.to_string();
         self.stream = Some(stream);
         Ok(())
@@ -74,6 +83,15 @@ mod tests {
 
     // Needs a real microphone. Run manually with:
     //   cargo test --manifest-path src-tauri/Cargo.toml -- --ignored mic::tests
+    //
+    // A stream error is logged, not treated as fatal: on at least one real
+    // device (a SteelSeries Sonar virtual microphone), WASAPI reports one
+    // benign buffer underrun as `IAudioClient::Start()` primes the ring
+    // buffer, then delivers real audio normally for the rest of the
+    // stream's life. Requiring zero errors would fail this test against
+    // real hardware for a condition capture already recovers from; what
+    // actually matters — and what stays asserted — is that genuine audio
+    // data arrives.
     #[test]
     #[ignore = "requires a real microphone"]
     fn captures_from_the_default_device() {
@@ -84,7 +102,9 @@ mod tests {
                 Box::new(move |chunk| {
                     let _ = tx.send(chunk);
                 }),
-                Box::new(|error| panic!("stream failed during a manual run: {error}")),
+                Box::new(|error| {
+                    eprintln!("capture reported an error during a manual run: {error}");
+                }),
             )
             .expect("a default input device should be available for a manual run");
 

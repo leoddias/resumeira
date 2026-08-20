@@ -1,48 +1,44 @@
 //! Platform capture sources: `mic` (default input) and `system` (loopback).
 //!
-//! Both sources are built on cpal and share the format-conversion and
-//! config-selection helpers below, so device handling is unit-testable
-//! without ever opening a real stream. See `mic` and `system` for the
-//! platform-specific device selection.
+//! Both sources are built on cpal and share the format-conversion helpers
+//! below, so device handling is unit-testable without ever opening a real
+//! stream. See `mic` and `system` for the platform-specific device and
+//! config selection.
+//!
+//! Neither source asks the device to produce [`TARGET_SAMPLE_RATE`]: WASAPI
+//! shared mode does not negotiate a format, it delivers the device's mix
+//! format regardless of what is requested, so forcing a rate here causes
+//! buffer underruns instead of resampling. Each caller passes in the
+//! device's own default config (`default_input_config` for the microphone,
+//! `default_output_config` for loopback, since WASAPI loopback captures in
+//! the render format) and [`crate::audio::resample::to_target_mono`]
+//! converts it downstream.
 
 pub mod mic;
 pub mod system;
 
-mod config;
 mod sample;
 
 use cpal::traits::{DeviceTrait, StreamTrait};
-use cpal::{Data, Device, InputCallbackInfo, Stream};
+use cpal::{Data, Device, InputCallbackInfo, Stream, SupportedStreamConfig};
 
-use crate::audio::{AudioChunk, AudioError, ChunkSink, ErrorSink, TARGET_SAMPLE_RATE};
+use crate::audio::{AudioChunk, AudioError, ChunkSink, ErrorSink};
 
-/// Builds and starts an input stream on `device`, converting every delivered
-/// buffer into an [`AudioChunk`] and handing it to `sink`.
+/// Builds and starts an input stream on `device` using `config` — the
+/// device's own native format, never a forced rate — converting every
+/// delivered buffer into an [`AudioChunk`] and handing it to `sink`.
 ///
 /// `kind` names the source in error and log messages (e.g. `"microphone"`,
 /// `"system audio"`). Log lines carry device names and error kinds only,
 /// never sample data.
 fn start_input_stream(
     device: &Device,
+    config: SupportedStreamConfig,
     sink: ChunkSink,
     on_error: ErrorSink,
     kind: &'static str,
 ) -> Result<Stream, AudioError> {
     let device_label = device.to_string();
-
-    let ranges = device
-        .supported_input_configs()
-        .map_err(|e| AudioError::UnsupportedConfig {
-            device: device_label.clone(),
-            reason: e.to_string(),
-        })?;
-
-    let config = config::select_config(ranges, TARGET_SAMPLE_RATE).ok_or_else(|| {
-        AudioError::UnsupportedConfig {
-            device: device_label.clone(),
-            reason: "device offers no usable input configuration".to_string(),
-        }
-    })?;
 
     let sample_format = config.sample_format();
     let channels = config.channels();
