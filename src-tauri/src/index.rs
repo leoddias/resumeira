@@ -60,6 +60,18 @@ pub enum IndexError {
 /// parent directory and the database file are both created — and safe to
 /// call again after the file has been deleted, since the schema is
 /// recreated from scratch.
+///
+/// `notes_fts` is a standalone FTS5 table, added purely additively — it is
+/// never required for `notes` to exist and `notes` never depends on it, so
+/// opening an older database that only has `notes` is not a migration, just
+/// one more `CREATE TABLE IF NOT EXISTS`. Any row already in `notes` that is
+/// missing from `notes_fts` (an older database opened for the first time
+/// after this change, or a database that was rebuilt before this table
+/// existed) is backfilled on every open, so search "just works" for
+/// existing users without a version check or a destructive rewrite. If
+/// `notes_fts` itself ever gets corrupted or out of sync, it is exactly as
+/// disposable as the rest of the index: `rebuild_from_disk` regenerates it
+/// from the notes on disk like everything else.
 pub fn open(db_path: &Path) -> Result<Connection, IndexError> {
     if let Some(parent) = db_path.parent() {
         std::fs::create_dir_all(parent).map_err(|source| IndexError::Io {
@@ -84,20 +96,54 @@ pub fn open(db_path: &Path) -> Result<Connection, IndexError> {
             summary     TEXT NOT NULL,
             transcript  TEXT NOT NULL
         );
-        CREATE INDEX IF NOT EXISTS notes_created_at ON notes (created_at DESC);",
+        CREATE INDEX IF NOT EXISTS notes_created_at ON notes (created_at DESC);
+        CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
+            folder UNINDEXED,
+            title,
+            summary,
+            transcript
+        );
+        INSERT INTO notes_fts (folder, title, summary, transcript)
+        SELECT folder, title, summary, transcript FROM notes
+        WHERE folder NOT IN (SELECT folder FROM notes_fts);",
     )
     .map_err(|source| IndexError::Query { source })?;
 
     Ok(conn)
 }
 
-/// Inserts or replaces a note's row, keyed by its folder path.
+/// Replaces `folder`'s row in `notes_fts`, if any, with the given text.
+/// Delete-then-insert because FTS5 has no `ON CONFLICT` support to upsert
+/// against.
+fn upsert_fts(conn: &Connection, folder: &str, note: &ParsedNote) -> Result<(), IndexError> {
+    conn.execute("DELETE FROM notes_fts WHERE folder = ?1", params![folder])
+        .map_err(|source| IndexError::Query { source })?;
+    conn.execute(
+        "INSERT INTO notes_fts (folder, title, summary, transcript) VALUES (?1, ?2, ?3, ?4)",
+        params![folder, note.title, note.summary_text, note.transcript_text],
+    )
+    .map_err(|source| IndexError::Query { source })?;
+    Ok(())
+}
+
+/// Inserts or replaces a note's row, keyed by its folder path, in both
+/// `notes` and its `notes_fts` search shadow.
 ///
 /// Call this only after [`storage::write_note`] has already succeeded — the
 /// file is the source of truth and the index write must never race ahead of
 /// it (ADR-0007).
+///
+/// Both tables are written inside one transaction (`unchecked_transaction`
+/// works from a shared `&Connection`, which is what callers hold behind a
+/// mutex) so a mid-write failure cannot leave `notes` and `notes_fts`
+/// disagreeing about a folder.
 pub fn upsert(conn: &Connection, folder: &Path, note: &ParsedNote) -> Result<(), IndexError> {
-    conn.execute(
+    let folder_key = folder.display().to_string();
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|source| IndexError::Query { source })?;
+
+    tx.execute(
         "INSERT INTO notes (folder, title, engine, model, language, created_at, summary, transcript)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
          ON CONFLICT(folder) DO UPDATE SET
@@ -109,7 +155,7 @@ pub fn upsert(conn: &Connection, folder: &Path, note: &ParsedNote) -> Result<(),
             summary = excluded.summary,
             transcript = excluded.transcript",
         params![
-            folder.display().to_string(),
+            folder_key,
             note.title,
             note.engine,
             note.model,
@@ -120,6 +166,10 @@ pub fn upsert(conn: &Connection, folder: &Path, note: &ParsedNote) -> Result<(),
         ],
     )
     .map_err(|source| IndexError::Query { source })?;
+
+    upsert_fts(&tx, &folder_key, note)?;
+
+    tx.commit().map_err(|source| IndexError::Query { source })?;
     Ok(())
 }
 
@@ -167,29 +217,52 @@ pub fn list(conn: &Connection) -> Result<Vec<NoteRecord>, IndexError> {
         .map_err(|source| IndexError::Query { source })
 }
 
-/// Full-text search over title, summary and transcript, newest match first.
+/// Builds an FTS5 `MATCH` expression that ANDs together every whitespace
+/// token of `query`, each wrapped as its own literal phrase.
 ///
-/// A blank query returns nothing rather than the whole index — callers that
-/// want everything should use [`list`].
+/// Quoting each token (and doubling any embedded `"`) means the tokenizer
+/// still splits it into words — so `budget?` matches a stored `budget` since
+/// punctuation is not part of the token — while none of FTS5's query syntax
+/// (`AND`, `-`, `*`, `(`, `:`, ...) inside a user's query is interpreted as
+/// an operator and cannot produce a syntax error or an unintended query
+/// shape.
+fn build_match_query(trimmed: &str) -> String {
+    trimmed
+        .split_whitespace()
+        .map(|term| format!("\"{}\"", term.replace('"', "\"\"")))
+        .collect::<Vec<_>>()
+        .join(" AND ")
+}
+
+/// Full-text search over title, summary and transcript, best match first.
+///
+/// Backed by SQLite FTS5 (`notes_fts`): the query and the indexed text are
+/// both tokenized, so results rank by relevance (`bm25`) instead of matching
+/// only the exact substring a `LIKE` query would need. A blank query returns
+/// nothing rather than the whole index — callers that want everything
+/// should use [`list`].
 pub fn search(conn: &Connection, query: &str) -> Result<Vec<NoteRecord>, IndexError> {
     let trimmed = query.trim();
     if trimmed.is_empty() {
         return Ok(Vec::new());
     }
-    let pattern = format!("%{trimmed}%");
+    let match_query = build_match_query(trimmed);
 
     let mut stmt = conn
         .prepare(
-            "SELECT folder, title, engine, model, language, created_at, summary
-             FROM notes
-             WHERE title LIKE ?1 ESCAPE '\\' COLLATE NOCASE
-                OR summary LIKE ?1 ESCAPE '\\' COLLATE NOCASE
-                OR transcript LIKE ?1 ESCAPE '\\' COLLATE NOCASE
-             ORDER BY created_at DESC, folder DESC",
+            "SELECT n.folder, n.title, n.engine, n.model, n.language, n.created_at, n.summary
+             FROM notes_fts
+             JOIN notes n ON n.folder = notes_fts.folder
+             WHERE notes_fts MATCH ?1
+             -- bm25 weights follow the table's column order (folder, title,
+             -- summary, transcript); a title hit ranks well above the same
+             -- word buried in a long transcript. Lower bm25 is a better
+             -- match, hence ASC.
+             ORDER BY bm25(notes_fts, 0.0, 10.0, 3.0, 1.0) ASC, n.created_at DESC, n.folder DESC",
         )
         .map_err(|source| IndexError::Query { source })?;
     let rows = stmt
-        .query_map(params![pattern], row_to_record)
+        .query_map(params![match_query], row_to_record)
         .map_err(|source| IndexError::Query { source })?;
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(|source| IndexError::Query { source })
@@ -206,6 +279,8 @@ pub fn search(conn: &Connection, query: &str) -> Result<Vec<NoteRecord>, IndexEr
 /// Returns how many notes were indexed.
 pub fn rebuild_from_disk(conn: &Connection, notes_root: &Path) -> Result<usize, IndexError> {
     conn.execute("DELETE FROM notes", [])
+        .map_err(|source| IndexError::Query { source })?;
+    conn.execute("DELETE FROM notes_fts", [])
         .map_err(|source| IndexError::Query { source })?;
 
     let entries = match std::fs::read_dir(notes_root) {
@@ -401,6 +476,118 @@ mod tests {
         let hits = search(&conn, "budget").unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].title, "Unrelated title");
+    }
+
+    #[test]
+    fn search_matches_a_word_regardless_of_query_punctuation() {
+        // The old `LIKE '%pattern%'` implementation matched only the exact
+        // substring typed: a query of "budget?" would never find a
+        // transcript that says "budget" without a question mark, since
+        // "budget?" is not a substring of "budget". FTS5 tokenizes the
+        // query the same way it tokenizes indexed text, so punctuation
+        // attached to a search term does not change what it matches.
+        let dir = tempdir().unwrap();
+        let conn = open(&dir.path().join("index.sqlite")).unwrap();
+        let notes_root = tempdir().unwrap();
+        let folder = write_meeting(
+            notes_root.path(),
+            "m1",
+            "Unrelated title",
+            "we discussed the budget for Q3",
+        );
+        let note = storage::read_note(&folder).unwrap();
+        upsert(&conn, &folder, &note).unwrap();
+
+        let hits = search(&conn, "budget?").unwrap();
+        assert_eq!(hits.len(), 1, "FTS5 should tokenize past the punctuation");
+        assert_eq!(hits[0].title, "Unrelated title");
+    }
+
+    #[test]
+    fn search_ranks_a_title_hit_above_a_transcript_only_hit() {
+        let dir = tempdir().unwrap();
+        let conn = open(&dir.path().join("index.sqlite")).unwrap();
+        let notes_root = tempdir().unwrap();
+
+        let buried = write_meeting(
+            notes_root.path(),
+            "m1",
+            "Unrelated title",
+            "roadmap roadmap roadmap roadmap came up once near the end",
+        );
+        let buried_note = storage::read_note(&buried).unwrap();
+        upsert(&conn, &buried, &buried_note).unwrap();
+
+        let prominent = write_meeting(notes_root.path(), "m2", "Roadmap review", "short text");
+        let prominent_note = storage::read_note(&prominent).unwrap();
+        upsert(&conn, &prominent, &prominent_note).unwrap();
+
+        let hits = search(&conn, "roadmap").unwrap();
+        assert_eq!(hits.len(), 2);
+        assert_eq!(
+            hits[0].title, "Roadmap review",
+            "bm25 ranking should favour the note whose title is the match"
+        );
+    }
+
+    #[test]
+    fn upsert_keeps_notes_fts_in_sync_when_a_note_is_updated() {
+        let dir = tempdir().unwrap();
+        let conn = open(&dir.path().join("index.sqlite")).unwrap();
+        let notes_root = tempdir().unwrap();
+        let folder = write_meeting(notes_root.path(), "m1", "First title", "alpha content");
+        let mut note = storage::read_note(&folder).unwrap();
+        upsert(&conn, &folder, &note).unwrap();
+        assert_eq!(search(&conn, "alpha").unwrap().len(), 1);
+
+        note.title = "Second title".to_owned();
+        note.transcript_text = "beta content".to_owned();
+        upsert(&conn, &folder, &note).unwrap();
+
+        assert!(
+            search(&conn, "alpha").unwrap().is_empty(),
+            "the stale transcript text must not still be searchable"
+        );
+        let hits = search(&conn, "beta").unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].title, "Second title");
+    }
+
+    #[test]
+    fn opening_a_database_that_predates_notes_fts_backfills_search() {
+        // Simulates an existing user's database: only the `notes` table
+        // exists (as it would have before this change), populated directly
+        // rather than through `upsert`. Opening it must not require wiping
+        // or migrating anything — `notes_fts` should simply appear and be
+        // backfilled from the rows already there.
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("index.sqlite");
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE notes (
+                    folder      TEXT PRIMARY KEY,
+                    title       TEXT NOT NULL,
+                    engine      TEXT NOT NULL,
+                    model       TEXT NOT NULL,
+                    language    TEXT,
+                    created_at  TEXT NOT NULL,
+                    summary     TEXT NOT NULL,
+                    transcript  TEXT NOT NULL
+                );",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO notes VALUES ('/legacy/m1', 'Legacy meeting', 'local', 'm', NULL, '2026-01-01T00:00:00+00:00', 'a legacy summary', 'a legacy transcript about onboarding')",
+                [],
+            )
+            .unwrap();
+        }
+
+        let conn = open(&db_path).unwrap();
+        let hits = search(&conn, "onboarding").unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].title, "Legacy meeting");
     }
 
     #[test]

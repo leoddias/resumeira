@@ -7,11 +7,17 @@
 //! path instead of an aspiration.
 //!
 //! The write is atomic (temp file, then rename) so a crash mid-write can
-//! never destroy a note that was already on disk.
+//! never destroy a note that was already on disk. The temp file is
+//! `sync_all()`-ed before the rename, so the guarantee holds even across a
+//! hard power loss, not just a process crash: once `write_note` returns
+//! `Ok`, the bytes are on the platter, not sitting in a page-cache buffer
+//! that a power cut can drop.
 //!
 //! Never logs note content or transcript text (docs/CONVENTIONS.md §
 //! Privacy) — errors here carry paths and error kinds only.
 
+use std::fs::File;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Local};
@@ -78,10 +84,14 @@ pub enum StorageError {
 /// transcript (ADR-0007). Returns the note's path.
 ///
 /// The write is atomic: content lands in a temp file in the same folder,
-/// then that file is renamed onto `notes.md`. A crash or a failed write
-/// leaves a partial temp file, never a half-written `notes.md` — and if
-/// `notes.md` already existed, that copy is untouched until the rename
-/// succeeds.
+/// is flushed and `fsync`-ed, then that file is renamed onto `notes.md`. A
+/// crash or a failed write leaves a partial temp file, never a half-written
+/// `notes.md` — and if `notes.md` already existed, that copy is untouched
+/// until the rename succeeds. The `fsync` before the rename is what makes
+/// this survive a hard power loss, not just a process crash: without it, a
+/// brand-new note can be "written" from the process's point of view while
+/// still sitting in the OS page cache, and a power cut before that cache
+/// flushes loses it.
 pub fn write_note(
     folder: &Path,
     summary: &Summary,
@@ -108,10 +118,27 @@ fn write_note_at(
     let final_path = folder.join(NOTE_FILENAME);
     let tmp_path = folder.join(format!("{NOTE_FILENAME}.tmp"));
 
-    std::fs::write(&tmp_path, content.as_bytes()).map_err(|source| StorageError::Io {
-        path: tmp_path.display().to_string(),
-        source,
-    })?;
+    {
+        let mut tmp_file = File::create(&tmp_path).map_err(|source| StorageError::Io {
+            path: tmp_path.display().to_string(),
+            source,
+        })?;
+        tmp_file
+            .write_all(content.as_bytes())
+            .map_err(|source| StorageError::Io {
+                path: tmp_path.display().to_string(),
+                source,
+            })?;
+        // Force the bytes to durable storage before the rename below makes
+        // them visible as `notes.md`. Without this, the OS is free to keep
+        // the write buffered, and a power loss between `write_all` and the
+        // eventual background flush would lose a note that `write_note`
+        // already reported as successful.
+        tmp_file.sync_all().map_err(|source| StorageError::Io {
+            path: tmp_path.display().to_string(),
+            source,
+        })?;
+    }
     std::fs::rename(&tmp_path, &final_path).map_err(|source| StorageError::Io {
         path: final_path.display().to_string(),
         source,
@@ -360,6 +387,31 @@ mod tests {
             "a failed write must not touch the existing note"
         );
         assert!(!after.contains("This must never land"));
+    }
+
+    #[test]
+    fn a_large_note_is_written_and_synced_in_full_before_the_rename() {
+        // Regression guard for the `File::create` + `write_all` + `sync_all`
+        // path: a large transcript exercises multiple internal write
+        // syscalls, so a bug that returns before all bytes are flushed (or
+        // syncs before all bytes are written) would truncate the note.
+        let dir = tempdir().unwrap();
+        let s = summary("Long meeting");
+        let long_text = "we discussed the roadmap in detail. ".repeat(20_000);
+        let t = Transcript {
+            segments: vec![segment(0.0, 1.0, &long_text)],
+            language: Some("en".to_owned()),
+            engine: Engine::Local,
+        };
+
+        write_note_at(dir.path(), &s, &t, fixed_now()).unwrap();
+
+        assert!(
+            !dir.path().join("notes.md.tmp").exists(),
+            "the temp file must not survive a successful write"
+        );
+        let parsed = read_note(dir.path()).unwrap();
+        assert_eq!(parsed.transcript_text, t.to_plain_text());
     }
 
     #[test]
