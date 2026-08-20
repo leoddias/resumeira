@@ -7,13 +7,14 @@ never the privacy rules or the test bar.
 ## v0.1 — dogfood build (Windows)
 
 ### M0 — Scaffold
-- [ ] Tauri 2 + React + TypeScript + Vite project
-- [ ] oxlint + Prettier, strict tsconfig
-- [ ] Vitest wired (one trivial passing test) + `cargo test` wired
-- [ ] `.gitignore` covers node/rust/tauri artifacts
-- [ ] GitHub Actions: lint + both suites + Windows build on push
-- [ ] Tray icon with Start/Stop items (no-op) and an empty main window
-- [ ] README: setup, dev + build scripts
+- [x] Tauri 2 + React + TypeScript + Vite project
+- [x] oxlint + Prettier, strict tsconfig
+- [x] Vitest wired (2 passing tests) + `cargo test` wired (3 passing tests)
+- [x] `.gitignore` covers node/rust/tauri artifacts
+- [x] GitHub Actions: lint + both suites + Windows build on push (written;
+      unverified until a remote exists)
+- [x] Tray icon with Start/Stop items (no-op) and an empty main window
+- [x] README: setup, dev + build scripts, permissions, data locations
 
 ### M1 — Recording core
 - [ ] Mic capture via cpal → f32 frames (device selection, error surfacing)
