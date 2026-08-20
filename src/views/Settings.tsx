@@ -80,6 +80,15 @@ function SettingsForm({ settings, keys, saveState, onSave, onSaveKey, onRemoveKe
     (status) => status.account === requiredAccount && status.configured,
   );
 
+  // The warning is a pre-save check, not a fact about the current draft —
+  // once the draft no longer needs it (engine switched back, or the key got
+  // configured), stop showing it instead of waiting for the next submit.
+  useEffect(() => {
+    if (requiredAccount === undefined || requiredKeyConfigured) {
+      setMissingKeyWarning(undefined);
+    }
+  }, [requiredAccount, requiredKeyConfigured]);
+
   function handleSubmit(event: FormEvent) {
     event.preventDefault();
     if (requiredAccount !== undefined && !requiredKeyConfigured) {
