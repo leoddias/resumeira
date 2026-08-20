@@ -278,10 +278,17 @@ pub fn search(conn: &Connection, query: &str) -> Result<Vec<NoteRecord>, IndexEr
 ///
 /// Returns how many notes were indexed.
 pub fn rebuild_from_disk(conn: &Connection, notes_root: &Path) -> Result<usize, IndexError> {
-    conn.execute("DELETE FROM notes", [])
+    // Both tables are cleared inside one transaction so a crash between the
+    // two deletes cannot leave `notes_fts` holding rows for folders that
+    // `notes` has already forgotten.
+    let tx = conn
+        .unchecked_transaction()
         .map_err(|source| IndexError::Query { source })?;
-    conn.execute("DELETE FROM notes_fts", [])
+    tx.execute("DELETE FROM notes", [])
         .map_err(|source| IndexError::Query { source })?;
+    tx.execute("DELETE FROM notes_fts", [])
+        .map_err(|source| IndexError::Query { source })?;
+    tx.commit().map_err(|source| IndexError::Query { source })?;
 
     let entries = match std::fs::read_dir(notes_root) {
         Ok(entries) => entries,
