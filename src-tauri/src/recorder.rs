@@ -16,6 +16,24 @@ use chrono::{DateTime, Local};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+/// How long a reported capture fault must go uncleared before the track is
+/// considered dead.
+///
+/// Windows emits a benign underrun when a stream starts, and virtual audio
+/// devices glitch under load; both are followed immediately by more audio.
+/// A genuinely lost device delivers nothing, so its fault simply never
+/// clears. Two seconds is long enough to ride out the startup glitch and
+/// short enough that the UI stops claiming a dead microphone is live before
+/// the user has said much.
+const CAPTURE_FAULT_GRACE: Duration = Duration::from_secs(2);
+
+/// A capture error that has not (yet) been contradicted by fresh audio.
+struct CaptureFault {
+    error: AudioError,
+    seen_at: Instant,
+}
 
 /// Per-track outcome reported by [`RecordingSession::stop`].
 ///
@@ -54,7 +72,38 @@ struct ActiveTrack {
     source: Box<dyn CaptureSource>,
     writer: Arc<Mutex<Option<Box<dyn TrackWriter>>>>,
     sample_count: Arc<AtomicU64>,
+    /// Set by a write failure. Always fatal for this track.
     error: Arc<Mutex<Option<AudioError>>>,
+    /// Set by a capture failure. Fatal only once it outlives the grace
+    /// window without any chunk arriving to clear it.
+    capture_fault: Arc<Mutex<Option<CaptureFault>>>,
+}
+
+impl ActiveTrack {
+    /// The error that has actually killed this track, if any.
+    ///
+    /// A write failure is fatal at once. A capture complaint is fatal only
+    /// once it has survived [`CAPTURE_FAULT_GRACE`] without any chunk
+    /// arriving to clear it — see the note where the error sink is built.
+    fn fatal_error(&self) -> Option<String> {
+        match self.error.lock() {
+            // A poisoned lock means a panicking sink; report the track as
+            // dead rather than claiming it is fine.
+            Err(_) => return Some("track state is unavailable".to_owned()),
+            Ok(guard) => {
+                if let Some(error) = guard.as_ref() {
+                    return Some(error.to_string());
+                }
+            }
+        }
+
+        match self.capture_fault.lock() {
+            Err(_) => Some("track state is unavailable".to_owned()),
+            Ok(guard) => guard.as_ref().and_then(|fault| {
+                (fault.seen_at.elapsed() >= CAPTURE_FAULT_GRACE).then(|| fault.error.to_string())
+            }),
+        }
+    }
 }
 
 enum TrackSlot {
@@ -112,8 +161,10 @@ impl RecordingSession {
                 Arc::new(Mutex::new(Some(writer)));
             let sample_count = Arc::new(AtomicU64::new(0));
             let error_slot: Arc<Mutex<Option<AudioError>>> = Arc::new(Mutex::new(None));
+            let capture_fault: Arc<Mutex<Option<CaptureFault>>> = Arc::new(Mutex::new(None));
 
             let sink_writer = writer_slot.clone();
+            let sink_fault = capture_fault.clone();
             let sink_samples = sample_count.clone();
             let sink_error = error_slot.clone();
             let sink_converter = converter.clone();
@@ -141,6 +192,11 @@ impl RecordingSession {
                 match write_result {
                     Ok(()) => {
                         sink_samples.fetch_add(mono.len() as u64, Ordering::Relaxed);
+                        // Audio is still flowing, so any earlier capture
+                        // complaint was a glitch, not a lost device.
+                        if let Ok(mut fault) = sink_fault.lock() {
+                            *fault = None;
+                        }
                     }
                     Err(err) => {
                         // Stop this track only: finalize the writer so
@@ -157,24 +213,29 @@ impl RecordingSession {
                 }
             });
 
-            // A device lost mid-recording arrives here, not through the
-            // chunk path. It fails exactly one track, the same way a write
-            // error does, so `stop()` and the UI report it identically.
-            let fault_error = error_slot.clone();
-            let fault_writer = writer_slot.clone();
+            // A device problem reported mid-recording is *not* immediately
+            // fatal. Windows reliably emits one benign buffer underrun as
+            // the audio client primes its ring buffer, and virtual devices
+            // (SteelSeries Sonar and friends) glitch harmlessly under load.
+            // Treating the first error as death would kill the microphone
+            // track at the start of essentially every meeting.
+            //
+            // So a capture error is recorded as *pending* and the writer is
+            // left alone. The next chunk that arrives clears it — a stream
+            // that is still delivering audio is alive by definition. Only a
+            // fault that no chunk clears within `CAPTURE_FAULT_GRACE` counts
+            // as a lost device. Write failures stay immediately fatal: a
+            // broken writer does not heal.
+            let fault_slot = capture_fault.clone();
             let on_error: ErrorSink = Box::new(move |err| {
-                let Ok(mut error_guard) = fault_error.lock() else {
-                    return;
-                };
-                if error_guard.is_some() {
-                    return;
-                }
-                if let Ok(mut writer_guard) = fault_writer.lock() {
-                    if let Some(failed_writer) = writer_guard.take() {
-                        let _ = failed_writer.finish();
+                if let Ok(mut guard) = fault_slot.lock() {
+                    if guard.is_none() {
+                        *guard = Some(CaptureFault {
+                            error: err,
+                            seen_at: Instant::now(),
+                        });
                     }
                 }
-                *error_guard = Some(err);
             });
 
             match source.start(sink, on_error) {
@@ -184,6 +245,7 @@ impl RecordingSession {
                     writer: writer_slot,
                     sample_count,
                     error: error_slot,
+                    capture_fault,
                 })),
                 Err(error) => slots.push(TrackSlot::FailedToStart { track, error }),
             }
@@ -201,6 +263,23 @@ impl RecordingSession {
         &self.folder
     }
 
+    /// Test-only: pretend every pending capture fault happened `by` earlier,
+    /// so the grace window can be exercised without sleeping.
+    #[cfg(test)]
+    fn age_capture_faults(&self, by: Duration) {
+        for slot in &self.tracks {
+            if let TrackSlot::Active(active) = slot {
+                if let Ok(mut guard) = active.capture_fault.lock() {
+                    if let Some(fault) = guard.as_mut() {
+                        if let Some(earlier) = fault.seen_at.checked_sub(by) {
+                            fault.seen_at = earlier;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// Per-track status *while the session is still running*.
     ///
     /// Exists so the UI can stop showing a track as live the moment its
@@ -210,12 +289,7 @@ impl RecordingSession {
             .iter()
             .map(|slot| match slot {
                 TrackSlot::Active(active) => {
-                    let error = match active.error.lock() {
-                        Ok(guard) => guard.as_ref().map(ToString::to_string),
-                        // A poisoned lock means a panicking sink; report the
-                        // track as dead rather than claiming it is fine.
-                        Err(_) => Some("track state is unavailable".to_owned()),
-                    };
+                    let error = active.fatal_error();
                     TrackLiveness {
                         track: active.track,
                         live: error.is_none(),
@@ -251,10 +325,7 @@ impl RecordingSession {
                     };
                     let finish_error = writer.and_then(|w| w.finish().err());
 
-                    let write_error = match active.error.lock() {
-                        Ok(guard) => guard.as_ref().map(ToString::to_string),
-                        Err(_) => None,
-                    };
+                    let write_error = active.fatal_error();
 
                     let error = write_error
                         .or_else(|| stop_error.map(|e| e.to_string()))
@@ -762,11 +833,80 @@ mod tests {
     }
 
     #[test]
-    fn a_device_lost_mid_recording_stops_only_that_track() {
+    fn a_transient_capture_glitch_does_not_kill_the_track() {
+        // Windows reports a benign underrun as the audio client starts. If
+        // that ended the recording, every meeting would lose its microphone
+        // in the first second.
         let dir = tempdir().expect("temp dir");
-        let (mic_source, mic_sink, mic_errors) = FakeSource::with_error_channel("mic");
+        let (source, sink, errors) = FakeSource::with_error_channel("mic");
+        let (writer, writes, _) = FakeWriter::new();
+
+        let mut session = RecordingSession::start(
+            dir.path(),
+            vec![(Track::Mic, Box::new(source), Box::new(writer))],
+            counting_converter(Arc::new(AtomicUsize::new(0))),
+        )
+        .expect("session starts");
+
+        fail_device(&errors, AudioError::Stream("buffer underrun".to_owned()));
+        push_chunk(&sink, vec![0.1; 4]);
+
+        assert!(
+            session.track_liveness()[0].live,
+            "a glitch followed by audio must leave the track live"
+        );
+        assert_eq!(writes.load(Ordering::SeqCst), 1, "audio kept being written");
+
+        // Even after the grace window, the fault is gone — the chunk cleared it.
+        session.age_capture_faults(Duration::from_secs(60));
+        assert!(session.track_liveness()[0].live);
+        assert_eq!(session.stop().tracks[0].error, None);
+    }
+
+    #[test]
+    fn a_device_that_stops_delivering_is_reported_dead_after_the_grace_window() {
+        let dir = tempdir().expect("temp dir");
+        let (source, _sink, errors) = FakeSource::with_error_channel("mic");
+        let (writer, _, _) = FakeWriter::new();
+
+        let mut session = RecordingSession::start(
+            dir.path(),
+            vec![(Track::Mic, Box::new(source), Box::new(writer))],
+            counting_converter(Arc::new(AtomicUsize::new(0))),
+        )
+        .expect("session starts");
+
+        fail_device(&errors, AudioError::Stream("device removed".to_owned()));
+
+        assert!(
+            session.track_liveness()[0].live,
+            "inside the grace window the track is still given the benefit of the doubt"
+        );
+
+        session.age_capture_faults(CAPTURE_FAULT_GRACE);
+
+        let liveness = session.track_liveness();
+        assert!(
+            !liveness[0].live,
+            "a fault no audio cleared means the device is gone"
+        );
+        assert!(liveness[0]
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("device removed")));
+
+        assert!(session.stop().tracks[0]
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("device removed")));
+    }
+
+    #[test]
+    fn a_lost_device_on_one_track_leaves_the_other_recording() {
+        let dir = tempdir().expect("temp dir");
+        let (mic_source, _mic_sink, mic_errors) = FakeSource::with_error_channel("mic");
         let (system_source, system_sink, _) = FakeSource::with_error_channel("system");
-        let (mic_writer, mic_writes, _) = FakeWriter::new();
+        let (mic_writer, _, _) = FakeWriter::new();
         let (system_writer, system_writes, _) = FakeWriter::new();
 
         let mut session = RecordingSession::start(
@@ -783,89 +923,59 @@ mod tests {
         )
         .expect("session starts");
 
-        push_chunk(&mic_sink, vec![0.1; 4]);
+        fail_device(&mic_errors, AudioError::Stream("device removed".to_owned()));
+        session.age_capture_faults(CAPTURE_FAULT_GRACE);
+
         push_chunk(&system_sink, vec![0.2; 4]);
-
-        // The microphone is unplugged.
-        fail_device(&mic_errors, AudioError::Stream("device removed".to_owned()));
-
-        // Anything the dead device somehow still delivers is dropped, while
-        // the other track keeps recording normally.
-        push_chunk(&mic_sink, vec![0.3; 4]);
-        push_chunk(&system_sink, vec![0.4; 4]);
-
-        assert_eq!(
-            mic_writes.load(Ordering::SeqCst),
-            1,
-            "the lost track must stop writing at the failure"
-        );
-        assert_eq!(
-            system_writes.load(Ordering::SeqCst),
-            2,
-            "the surviving track must keep recording"
-        );
-
-        let report = session.stop();
-        let mic = report
-            .tracks
-            .iter()
-            .find(|t| t.track == Track::Mic)
-            .expect("mic reported");
-        assert!(
-            mic.error
-                .as_deref()
-                .is_some_and(|e| e.contains("device removed")),
-            "the report must say why the track died, got {:?}",
-            mic.error
-        );
-        let system = report
-            .tracks
-            .iter()
-            .find(|t| t.track == Track::System)
-            .expect("system reported");
-        assert_eq!(system.error, None);
-    }
-
-    #[test]
-    fn liveness_reports_a_dead_track_before_the_session_is_stopped() {
-        let dir = tempdir().expect("temp dir");
-        let (mic_source, _mic_sink, mic_errors) = FakeSource::with_error_channel("mic");
-        let (system_source, _system_sink, _) = FakeSource::with_error_channel("system");
-        let (mic_writer, _, _) = FakeWriter::new();
-        let (system_writer, _, _) = FakeWriter::new();
-
-        let session = RecordingSession::start(
-            dir.path(),
-            vec![
-                (Track::Mic, Box::new(mic_source), Box::new(mic_writer)),
-                (
-                    Track::System,
-                    Box::new(system_source),
-                    Box::new(system_writer),
-                ),
-            ],
-            counting_converter(Arc::new(AtomicUsize::new(0))),
-        )
-        .expect("session starts");
-
-        assert!(
-            session.track_liveness().iter().all(|t| t.live),
-            "both tracks start live"
-        );
-
-        fail_device(&mic_errors, AudioError::Stream("device removed".to_owned()));
+        push_chunk(&system_sink, vec![0.2; 4]);
 
         let liveness = session.track_liveness();
         let mic = liveness
             .iter()
             .find(|t| t.track == Track::Mic)
-            .expect("mic listed");
+            .expect("mic");
         let system = liveness
             .iter()
             .find(|t| t.track == Track::System)
-            .expect("system listed");
-        assert!(!mic.live, "a lost device must not still be reported live");
-        assert!(mic.error.is_some());
-        assert!(system.live);
+            .expect("system");
+        assert!(!mic.live);
+        assert!(system.live, "the surviving track must keep recording");
+        assert_eq!(system_writes.load(Ordering::SeqCst), 2);
+
+        let report = session.stop();
+        let system_report = report
+            .tracks
+            .iter()
+            .find(|t| t.track == Track::System)
+            .expect("system reported");
+        assert_eq!(system_report.error, None);
+    }
+
+    #[test]
+    fn a_write_failure_is_fatal_immediately_with_no_grace() {
+        // A broken writer does not heal, so it must not get the benefit of
+        // the doubt that a capture glitch gets.
+        let dir = tempdir().expect("temp dir");
+        let (source, sink, _) = FakeSource::with_error_channel("mic");
+        let (writer, _, finished) = FakeWriter::failing_on_call(1);
+
+        let mut session = RecordingSession::start(
+            dir.path(),
+            vec![(Track::Mic, Box::new(source), Box::new(writer))],
+            counting_converter(Arc::new(AtomicUsize::new(0))),
+        )
+        .expect("session starts");
+
+        push_chunk(&sink, vec![0.1; 4]);
+
+        assert!(
+            !session.track_liveness()[0].live,
+            "a write failure kills the track at once"
+        );
+        assert!(
+            *finished.lock().expect("lock"),
+            "the writer is finalized so the captured audio stays playable"
+        );
+        assert!(session.stop().tracks[0].error.is_some());
     }
 }

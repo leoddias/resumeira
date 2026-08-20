@@ -242,3 +242,26 @@ the capture implementations pass theirs straight through.
 Liveness is pull-based: the 2 s refresh means a dead track is visible within
 about two seconds, not instantly. If that proves too slow in dogfood, push a
 state event from the error sink instead — the plumbing is already in place.
+
+## ADR-0018 — A capture error is transient until audio stops arriving
+**Date:** 2026-08-20 · **Status:** accepted
+**Decision:** Refines ADR-0017. An error reported through `ErrorSink` marks
+the track's fault as *pending* and leaves its writer untouched. The next
+chunk written clears it. Only a fault that survives `CAPTURE_FAULT_GRACE`
+(2 s) without any audio arriving marks the track dead. Write failures remain
+immediately fatal and still finalize the writer.
+**Why:** Measured on the dogfood machine: Windows reliably emits one benign
+buffer underrun as `IAudioClient::Start()` primes its ring buffer, and
+virtual audio devices glitch harmlessly under load. Under ADR-0017's
+first-error-kills rule that would have ended the microphone track at the
+start of essentially every meeting — the ADR meant to make the app honest
+about dead microphones would instead have created dead microphones. A
+genuinely lost device delivers no further audio, so its fault simply never
+clears; using "is audio still arriving?" as the liveness test needs no
+device-specific error taxonomy, which is good because that taxonomy differs
+per driver. Rejected: classifying cpal error kinds (brittle and per-driver),
+and counting consecutive errors (a dead device reports once, not repeatedly).
+**Consequences:** A lost device is visible after ~2 s rather than instantly.
+Chunks are always written, so a device that recovers after the window simply
+becomes live again. Found only because the hardware smoke test was run — the
+unit suite was green throughout.
