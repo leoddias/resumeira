@@ -30,7 +30,7 @@ Contract (read-only for all packets): `src-tauri/src/audio/mod.rs` — `Track`,
     the input is already 16 kHz mono; every malformed-input case above;
     mixer length, mixer sum, mixer bounds, mixer with one empty side.
 - **Review:** conventions+privacy
-- **Status:** queued
+- **Status:** running
 
 ### T-M1-2 — Opus track writer
 - **Goal:** persist one track incrementally as Ogg/Opus, so a crash mid-meeting
@@ -55,7 +55,7 @@ Contract (read-only for all packets): `src-tauri/src/audio/mod.rs` — `Track`,
     within a stated byte budget (~24 kbps ±50%); `write` after an I/O failure
     returns `AudioError::Io` rather than panicking.
 - **Review:** conventions+privacy
-- **Status:** queued
+- **Status:** running
 
 ### T-M1-3 — Capture sources (mic + system loopback)
 - **Goal:** deliver real audio from the microphone and from whatever the
@@ -82,7 +82,7 @@ Contract (read-only for all packets): `src-tauri/src/audio/mod.rs` — `Track`,
     saying how to run it manually — but the packet is not done on ignored
     tests alone.
 - **Review:** conventions+privacy
-- **Status:** queued
+- **Status:** running
 
 ### T-M1-4 — Recording session
 - **Goal:** one call starts a meeting recording, one call ends it, and both
@@ -109,7 +109,7 @@ Contract (read-only for all packets): `src-tauri/src/audio/mod.rs` — `Track`,
     `stop()` twice is safe; folder-collision naming; the converter is applied
     exactly once per chunk.
 - **Review:** conventions+privacy
-- **Status:** queued
+- **Status:** running
 
 ## Orchestrator-owned (not in any packet)
 
