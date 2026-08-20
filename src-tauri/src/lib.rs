@@ -4,6 +4,8 @@
 //! provider calls and storage. API keys are read and used here and never
 //! cross IPC into the WebView (ADR-0009).
 
+pub mod audio;
+pub mod recorder;
 pub mod tray;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
