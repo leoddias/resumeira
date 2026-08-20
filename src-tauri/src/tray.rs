@@ -1,9 +1,15 @@
 //! System tray: the primary control surface. Starting a recording must never
 //! be more than one click away, whatever window happens to be focused.
+//!
+//! The tray does not hold its own idea of whether a recording is running —
+//! it reflects [`crate::session::RecordingState`] through [`reflect_state`],
+//! so the tray and the window can never disagree.
 
+use crate::commands;
+use crate::session::RecordingState;
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
-    tray::TrayIconBuilder,
+    tray::{TrayIcon, TrayIconBuilder},
     App, AppHandle, Manager, Runtime,
 };
 
@@ -12,6 +18,17 @@ use tauri::{
 pub enum TrayState {
     Idle,
     Recording,
+}
+
+impl TrayState {
+    /// The tray view of an app state.
+    pub fn of(state: &RecordingState) -> Self {
+        if state.is_capturing() {
+            TrayState::Recording
+        } else {
+            TrayState::Idle
+        }
+    }
 }
 
 /// Tooltip text for the tray icon.
@@ -36,9 +53,15 @@ pub fn stop_enabled(state: TrayState) -> bool {
     matches!(state, TrayState::Recording)
 }
 
-/// Build the tray icon and its menu. M0 wires the menu only — the recording
-/// items log their intent until `recorder` lands in M1.
-pub fn setup(app: &App) -> tauri::Result<()> {
+/// Handles kept so the tray can be updated as the recording state changes.
+struct TrayHandles<R: Runtime> {
+    start: MenuItem<R>,
+    stop: MenuItem<R>,
+    icon: TrayIcon<R>,
+}
+
+/// Build the tray icon and its menu, and register it for later updates.
+pub fn setup<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
     let state = TrayState::Idle;
 
     let start = MenuItem::with_id(
@@ -70,15 +93,42 @@ pub fn setup(app: &App) -> tauri::Result<()> {
         builder = builder.icon(icon.clone());
     }
 
-    builder.build(app)?;
+    let icon = builder.build(app)?;
+    app.manage(TrayHandles { start, stop, icon });
     Ok(())
+}
+
+/// Update the tray to match the app state.
+///
+/// Failures here are cosmetic and must never interrupt a recording, so they
+/// are logged rather than propagated.
+pub fn reflect_state<R: Runtime>(app: &AppHandle<R>, state: &RecordingState) {
+    let Some(handles) = app.try_state::<TrayHandles<R>>() else {
+        return;
+    };
+
+    if let Err(error) = handles.start.set_enabled(state.can_start()) {
+        log::warn!("tray: could not update the start item: {error}");
+    }
+    if let Err(error) = handles.stop.set_enabled(state.can_stop()) {
+        log::warn!("tray: could not update the stop item: {error}");
+    }
+    if let Err(error) = handles
+        .icon
+        .set_tooltip(Some(tooltip(TrayState::of(state))))
+    {
+        log::warn!("tray: could not update the tooltip: {error}");
+    }
 }
 
 fn on_menu_event<R: Runtime>(app: &AppHandle<R>, event: tauri::menu::MenuEvent) {
     match event.id.as_ref() {
-        // M1 replaces these with real session control.
-        "start" => log::info!("tray: start recording requested"),
-        "stop" => log::info!("tray: stop recording requested"),
+        "start" => {
+            commands::start(app);
+        }
+        "stop" => {
+            commands::stop(app);
+        }
         "open" => show_main_window(app),
         "quit" => app.exit(0),
         other => log::warn!("tray: unknown menu id {other}"),
@@ -98,6 +148,8 @@ fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audio::Track;
+    use crate::session::TrackStatus;
 
     #[test]
     fn tooltip_states_whether_a_microphone_is_live() {
@@ -120,5 +172,37 @@ mod tests {
     fn start_is_the_idle_action_and_stop_the_recording_action() {
         assert!(start_enabled(TrayState::Idle));
         assert!(stop_enabled(TrayState::Recording));
+    }
+
+    #[test]
+    fn the_tray_shows_recording_exactly_when_audio_is_being_captured() {
+        let recording = RecordingState::Recording {
+            started_at: 0,
+            tracks: vec![TrackStatus {
+                track: Track::Mic,
+                device_name: "Mic".to_owned(),
+                live: true,
+                error: None,
+            }],
+        };
+        assert_eq!(TrayState::of(&recording), TrayState::Recording);
+        assert_eq!(
+            TrayState::of(&RecordingState::Starting),
+            TrayState::Recording
+        );
+
+        for state in [
+            RecordingState::Idle,
+            RecordingState::Stopping,
+            RecordingState::Failed {
+                error: "boom".to_owned(),
+            },
+        ] {
+            assert_eq!(
+                TrayState::of(&state),
+                TrayState::Idle,
+                "{state:?} must not claim a live microphone"
+            );
+        }
     }
 }
