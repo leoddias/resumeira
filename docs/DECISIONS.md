@@ -204,3 +204,19 @@ than warning — without the pin the failure is an opaque build-script panic.
 First build is slower. If libopus ever becomes a packaging problem for
 signed installers, revisit — the encoder sits behind the `TrackWriter` trait
 precisely so it can be swapped.
+
+## ADR-0016 — Cargo config lives at the repo root
+**Date:** 2026-08-20 · **Status:** accepted
+**Decision:** `.cargo/config.toml` sits at the repository root, not beside
+`src-tauri/Cargo.toml`. Supersedes the file location named in ADR-0015; the
+CMake pin itself is unchanged.
+**Why:** Cargo discovers configuration by walking up from the *current
+working directory*, ignoring `--manifest-path` entirely. With the file under
+`src-tauri/`, `cargo test --manifest-path src-tauri/Cargo.toml` from the repo
+root — how CI and every agent invokes it — never saw the pin, and the first
+build on a clean `target/` failed with the opaque libopus CMake error while
+subsequent builds passed from cache. A failure that only appears on fresh
+clones and CI runners is exactly the kind that gets misdiagnosed for hours.
+At the root, both invocation styles find it, since cwd inside `src-tauri/`
+still walks up.
+**Consequences:** Any future cargo configuration goes in the root file.
