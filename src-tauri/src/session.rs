@@ -203,7 +203,17 @@ impl SessionManager {
         let folder_root = inner.notes_root.clone();
         let converter = inner.factory.converter();
 
-        let built = match inner.factory.build(&folder_root) {
+        // The meeting folder has to exist before the factory runs: track
+        // writers open their files *inside* it. Building them against the
+        // notes root instead put the audio beside the meeting folder rather
+        // than in it, and every meeting then reported "no audio was
+        // recorded" while the recording sat one directory up.
+        let folder = match crate::recorder::create_meeting_folder(&folder_root) {
+            Ok(folder) => folder,
+            Err(error) => return inner.fail(error.to_string()),
+        };
+
+        let built = match inner.factory.build(&folder) {
             Ok(built) => built,
             Err(error) => return inner.fail(error.to_string()),
         };
@@ -218,7 +228,7 @@ impl SessionManager {
             specs.push(spec);
         }
 
-        match RecordingSession::start(&folder_root, specs, converter) {
+        match RecordingSession::start_in(folder, specs, converter) {
             Ok(session) => {
                 // Seeded from what actually started, not from optimism: a
                 // device that failed to open must show dead from the first
@@ -392,10 +402,16 @@ mod tests {
     struct FakeFactory {
         tracks: Vec<Track>,
         error: Option<&'static str>,
+        /// Folder the factory was handed, so a test can prove it is the
+        /// meeting folder and not the notes root.
+        seen_folder: std::sync::Mutex<Option<PathBuf>>,
     }
 
     impl TrackFactory for FakeFactory {
-        fn build(&self, _folder: &Path) -> Result<Vec<(TrackSpec, String)>, AudioError> {
+        fn build(&self, folder: &Path) -> Result<Vec<(TrackSpec, String)>, AudioError> {
+            if let Ok(mut seen) = self.seen_folder.lock() {
+                *seen = Some(folder.to_path_buf());
+            }
             if self.error.is_some() {
                 return Err(AudioError::NoDevice("input"));
             }
@@ -425,6 +441,7 @@ mod tests {
             Box::new(FakeFactory {
                 tracks,
                 error: None,
+                seen_folder: std::sync::Mutex::new(None),
             }),
         );
         (manager, dir)
@@ -503,6 +520,7 @@ mod tests {
             Box::new(FakeFactory {
                 tracks: vec![],
                 error: Some("no devices"),
+                seen_folder: std::sync::Mutex::new(None),
             }),
         );
         let state = manager.start(1_000);
@@ -525,6 +543,65 @@ mod tests {
             RecordingState::Recording { tracks, .. } => assert_eq!(tracks.len(), 1),
             other => panic!("expected Recording, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn the_factory_builds_tracks_inside_the_meeting_folder() {
+        // Regression: the factory used to be handed the notes root, so the
+        // Opus writers opened their files one directory above the meeting
+        // folder. Recording worked, the audio existed, and every meeting
+        // still reported "no audio was recorded" because the pipeline looked
+        // in the folder the session had created. No unit test caught it —
+        // every fake factory ignored the path it was given.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let factory = FakeFactory {
+            tracks: Track::all().to_vec(),
+            error: None,
+            seen_folder: std::sync::Mutex::new(None),
+        };
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let probe = seen.clone();
+
+        struct Probing {
+            inner: FakeFactory,
+            probe: std::sync::Arc<std::sync::Mutex<Option<PathBuf>>>,
+        }
+
+        impl TrackFactory for Probing {
+            fn build(&self, folder: &Path) -> Result<Vec<(TrackSpec, String)>, AudioError> {
+                if let Ok(mut probe) = self.probe.lock() {
+                    *probe = Some(folder.to_path_buf());
+                }
+                self.inner.build(folder)
+            }
+            fn converter(&self) -> ChunkConverter {
+                self.inner.converter()
+            }
+        }
+
+        let notes_root = dir.path().to_path_buf();
+        let manager = SessionManager::new(
+            notes_root.clone(),
+            Box::new(Probing {
+                inner: factory,
+                probe,
+            }),
+        );
+        manager.start(1_000);
+
+        let handed = seen.lock().expect("lock").clone().expect("factory ran");
+        assert_ne!(
+            handed, notes_root,
+            "the factory must not be handed the notes root"
+        );
+        assert!(
+            handed.starts_with(&notes_root),
+            "the meeting folder must live under the notes root, got {handed:?}"
+        );
+        assert!(
+            handed.is_dir(),
+            "the meeting folder must exist before the factory runs"
+        );
     }
 
     #[test]

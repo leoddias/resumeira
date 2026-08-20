@@ -141,6 +141,19 @@ impl RecordingSession {
         Self::start_at(notes_root, tracks, converter, Local::now())
     }
 
+    /// Starts a session in a folder that already exists.
+    ///
+    /// Used when the caller had to create the folder first — the track
+    /// writers need to be built *inside* the meeting folder, so whoever
+    /// builds them has to know it before the session exists.
+    pub fn start_in(
+        folder: PathBuf,
+        tracks: Vec<TrackSpec>,
+        converter: ChunkConverter,
+    ) -> Result<Self, AudioError> {
+        Self::assemble(folder, tracks, converter)
+    }
+
     /// Same as [`Self::start`] with an injected clock, so folder naming is
     /// deterministic in tests.
     fn start_at(
@@ -149,12 +162,16 @@ impl RecordingSession {
         converter: ChunkConverter,
         now: DateTime<Local>,
     ) -> Result<Self, AudioError> {
-        let folder = resolve_folder(notes_root, now);
-        std::fs::create_dir_all(&folder).map_err(|source| AudioError::Io {
-            path: folder.display().to_string(),
-            source,
-        })?;
+        let folder = create_meeting_folder_at(notes_root, now)?;
+        Self::assemble(folder, tracks, converter)
+    }
 
+    /// Wires every track's pipeline into an already-created folder.
+    fn assemble(
+        folder: PathBuf,
+        tracks: Vec<TrackSpec>,
+        converter: ChunkConverter,
+    ) -> Result<Self, AudioError> {
         let mut slots = Vec::with_capacity(tracks.len());
         for (track, mut source, writer) in tracks {
             let writer_slot: Arc<Mutex<Option<Box<dyn TrackWriter>>>> =
@@ -363,6 +380,27 @@ impl Drop for RecordingSession {
     fn drop(&mut self) {
         let _ = self.stop();
     }
+}
+
+/// Creates the folder this meeting will be recorded into.
+///
+/// Callers that build their track writers themselves must create the folder
+/// first and pass it to [`RecordingSession::start_in`], because a writer has
+/// to be opened inside the meeting folder — not beside it.
+pub fn create_meeting_folder(notes_root: &Path) -> Result<PathBuf, AudioError> {
+    create_meeting_folder_at(notes_root, Local::now())
+}
+
+fn create_meeting_folder_at(
+    notes_root: &Path,
+    now: DateTime<Local>,
+) -> Result<PathBuf, AudioError> {
+    let folder = resolve_folder(notes_root, now);
+    std::fs::create_dir_all(&folder).map_err(|source| AudioError::Io {
+        path: folder.display().to_string(),
+        source,
+    })?;
+    Ok(folder)
 }
 
 /// Meeting folder name for `now`, local time: `YYYY-MM-DD-HHMM`.
