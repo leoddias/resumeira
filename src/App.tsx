@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useRecording } from './state/useRecording';
+import FirstRun from './views/FirstRun';
 import Meetings from './views/Meetings';
 import Note from './views/Note';
 import RecordingBar from './views/RecordingBar';
@@ -32,6 +33,8 @@ export default function App() {
           </button>
         </nav>
       </header>
+
+      <FirstRun />
 
       <RecordingBar state={state} onStart={start} onStop={stop} />
 

@@ -350,3 +350,59 @@ body {
   color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
+
+/* First-run onboarding */
+
+.first-run {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 1.25rem 1.5rem;
+  margin-bottom: 2rem;
+  border: 1px solid #2a2b33;
+  border-radius: 8px;
+  background: #1a1b21;
+}
+
+.first-run h2 {
+  margin: 0;
+}
+
+.first-run__steps {
+  margin: 0;
+  padding-left: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+/*
+ * There is no local summarizer, so summarizing always sends the transcript
+ * to a cloud LLM. Someone who installed this believing nothing ever leaves
+ * their machine has to learn it here, before their first meeting — so this
+ * gets the same weight as the cloud warning in Settings.
+ */
+.first-run__cloud-notice {
+  margin: 0;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: rgb(217 83 79 / 12%);
+  color: var(--fg);
+}
+
+.first-run__mic-notice {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+.first-run__skip {
+  align-self: flex-start;
+  padding: 0.4rem 0.8rem;
+  border: 1px solid #35363f;
+  border-radius: 6px;
+  background: #1d1e25;
+  color: var(--fg);
+  cursor: pointer;
+}
