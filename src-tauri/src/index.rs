@@ -378,11 +378,7 @@ mod tests {
 
         let count = rebuild_from_disk(&conn, notes_root.path()).unwrap();
         assert_eq!(count, 2);
-        let titles: Vec<String> = list(&conn)
-            .unwrap()
-            .into_iter()
-            .map(|n| n.title)
-            .collect();
+        let titles: Vec<String> = list(&conn).unwrap().into_iter().map(|n| n.title).collect();
         assert!(titles.contains(&"First meeting".to_owned()));
         assert!(titles.contains(&"Second meeting".to_owned()));
     }
