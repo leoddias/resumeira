@@ -87,4 +87,9 @@ describe('RecordingBar', () => {
     renderBar({ status: 'processing', stage: 'transcribing' });
     expect(screen.getByText('Transcribing…')).toBeInTheDocument();
   });
+
+  it('names the speaker step rather than leaving a silent gap', () => {
+    renderBar({ status: 'processing', stage: 'identifying' });
+    expect(screen.getByText('Identifying speakers…')).toBeInTheDocument();
+  });
 });

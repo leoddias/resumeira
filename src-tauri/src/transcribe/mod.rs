@@ -61,6 +61,56 @@ pub struct Segment {
     /// (ADR-0004).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub track: Option<Track>,
+    /// Who said it, once the speaker step has run (ADR-0021).
+    ///
+    /// Either a name the conversation itself supplied ("Ana") or a stable
+    /// anonymous label ("Speaker 2"). `None` means nobody has tried, or the
+    /// attempt could not place this line — never a guess.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speaker: Option<String>,
+}
+
+impl Segment {
+    /// How this line is attributed, best first: the identified speaker, then
+    /// the track it arrived on, then nothing.
+    ///
+    /// The track fallback is what ADR-0004 bought and is worth showing on its
+    /// own: "You" and "Others" is less than a name, but it is more than
+    /// silence about who spoke.
+    pub fn speaker_label(&self) -> Option<&str> {
+        match (self.speaker.as_deref(), self.track) {
+            (Some(speaker), _) => Some(speaker),
+            (None, Some(Track::Mic)) => Some(MIC_LABEL),
+            (None, Some(Track::System)) => Some(SYSTEM_LABEL),
+            (None, None) => None,
+        }
+    }
+}
+
+/// Written when a mic line has no identified speaker. Parsed back to
+/// [`Track::Mic`] when a note is read, so the round trip loses nothing.
+pub const MIC_LABEL: &str = "You";
+/// The system-track counterpart of [`MIC_LABEL`].
+pub const SYSTEM_LABEL: &str = "Others";
+/// Written for a line with no speaker *and* no track.
+///
+/// A note always carries a label so that the first `": "` after the
+/// timestamp is unambiguously the separator - speech is full of colons, and
+/// without this a sentence could be read back as somebody's name.
+pub const UNKNOWN_LABEL: &str = "Unknown";
+
+/// `mm:ss` for a position in the meeting, widening past an hour.
+///
+/// Written into `notes.md`, so the format is part of the file contract that
+/// `meetings_commands::parse_transcript` reads back.
+pub(crate) fn format_timestamp(seconds: f64) -> String {
+    let total = seconds.max(0.0).round() as u64;
+    let (hours, minutes, secs) = (total / 3600, (total % 3600) / 60, total % 60);
+    if hours > 0 {
+        format!("{hours}:{minutes:02}:{secs:02}")
+    } else {
+        format!("{minutes:02}:{secs:02}")
+    }
 }
 
 /// A whole meeting's speech.
@@ -78,14 +128,62 @@ pub struct Transcript {
 }
 
 impl Transcript {
-    /// The transcript as plain text, one line per segment.
-    pub fn to_plain_text(&self) -> String {
-        self.segments
-            .iter()
-            .map(|segment| segment.text.trim())
-            .filter(|text| !text.is_empty())
+    /// The transcript as plain text, one line per segment, each prefixed with
+    /// whoever said it when that is known.
+    ///
+    /// This is what a model is asked to summarize: an action item can only
+    /// name an owner if the transcript said who was speaking.
+    pub fn to_prompt_text(&self) -> String {
+        self.non_empty_segments()
+            .map(|segment| match segment.speaker_label() {
+                Some(label) => format!("{label}: {}", segment.text.trim()),
+                None => segment.text.trim().to_owned(),
+            })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// The transcript as it is written into `notes.md`: `[mm:ss] Ana: text`,
+    /// falling back to the track's label, then to [`UNKNOWN_LABEL`].
+    ///
+    /// The timestamp and the label are not decoration - they are the only
+    /// copy of that information once the note is on disk, and
+    /// `meetings_commands::parse_transcript` reads them back.
+    pub fn to_note_text(&self) -> String {
+        self.non_empty_segments()
+            .map(|segment| {
+                let stamp = format_timestamp(segment.start);
+                let label = segment.speaker_label().unwrap_or(UNKNOWN_LABEL);
+                format!("[{stamp}] {label}: {}", segment.text.trim())
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Everyone the speaker step actually identified, in the order they first
+    /// spoke.
+    ///
+    /// Derived here rather than asked of a model, so it cannot name someone
+    /// who never appears in the transcript. Empty when the step did not run
+    /// or placed nothing: the track fallbacks ("You", "Others") are a way of
+    /// rendering a line, not people, so they are deliberately excluded.
+    pub fn participants(&self) -> Vec<String> {
+        let mut seen: Vec<String> = Vec::new();
+        for segment in self.non_empty_segments() {
+            if let Some(speaker) = segment.speaker.as_deref() {
+                if !seen.iter().any(|known| known == speaker) {
+                    seen.push(speaker.to_owned());
+                }
+            }
+        }
+        seen
+    }
+
+    /// Segments that carry actual speech, in order.
+    fn non_empty_segments(&self) -> impl Iterator<Item = &Segment> {
+        self.segments
+            .iter()
+            .filter(|segment| !segment.text.trim().is_empty())
     }
 
     /// Total speech duration in seconds: the end of the last segment.
@@ -132,6 +230,8 @@ impl std::fmt::Debug for Segment {
             .field("start", &self.start)
             .field("end", &self.end)
             .field("track", &self.track)
+            // The name itself is somebody's, so only its presence is printed.
+            .field("speaker_known", &self.speaker.is_some())
             .field("text_chars", &self.text.chars().count())
             .finish()
     }
@@ -204,6 +304,7 @@ mod tests {
             end,
             text: text.to_owned(),
             track: None,
+            speaker: None,
         }
     }
 
@@ -215,14 +316,100 @@ mod tests {
         }
     }
 
+    fn attributed(start: f64, text: &str, track: Track, speaker: Option<&str>) -> Segment {
+        Segment {
+            track: Some(track),
+            speaker: speaker.map(str::to_owned),
+            ..segment(start, start + 1.0, text)
+        }
+    }
+
     #[test]
-    fn plain_text_joins_segments_and_drops_blanks() {
+    fn a_line_is_labelled_by_its_speaker_first_and_its_track_second() {
+        let named = attributed(0.0, "hi", Track::System, Some("Ana"));
+        assert_eq!(named.speaker_label(), Some("Ana"));
+
+        let unnamed = attributed(0.0, "hi", Track::System, None);
+        assert_eq!(
+            unnamed.speaker_label(),
+            Some(SYSTEM_LABEL),
+            "the track is what ADR-0004 bought; it stands in when nobody was named"
+        );
+
+        assert_eq!(segment(0.0, 1.0, "hi").speaker_label(), None);
+    }
+
+    #[test]
+    fn prompt_text_carries_the_speaker_so_an_owner_can_be_named() {
+        let t = transcript(vec![
+            attributed(0.0, "I will send it", Track::Mic, Some("Leo")),
+            attributed(1.0, "thanks", Track::System, None),
+        ]);
+        assert_eq!(t.to_prompt_text(), "Leo: I will send it\nOthers: thanks");
+    }
+
+    #[test]
+    fn note_text_writes_the_timestamp_and_the_label() {
+        let t = transcript(vec![
+            attributed(0.0, "morning", Track::Mic, None),
+            attributed(74.0, "hi", Track::System, Some("Ana")),
+            segment(3605.0, 3606.0, "unattributed"),
+        ]);
+        assert_eq!(
+            t.to_note_text(),
+            "[00:00] You: morning\n[01:14] Ana: hi\n[1:00:05] Unknown: unattributed"
+        );
+    }
+
+    #[test]
+    fn participants_are_the_identified_speakers_in_first_speaking_order() {
+        let t = transcript(vec![
+            attributed(0.0, "hi", Track::System, Some("Ana")),
+            attributed(1.0, "hello", Track::Mic, Some("Leo")),
+            attributed(2.0, "again", Track::System, Some("Ana")),
+        ]);
+        assert_eq!(t.participants(), vec!["Ana".to_owned(), "Leo".to_owned()]);
+    }
+
+    #[test]
+    fn an_unidentified_meeting_has_no_participants() {
+        let t = transcript(vec![
+            attributed(0.0, "hi", Track::Mic, None),
+            attributed(1.0, "hello", Track::System, None),
+        ]);
+        assert!(
+            t.participants().is_empty(),
+            "'You' and 'Others' are ways of rendering a line, not people"
+        );
+    }
+
+    #[test]
+    fn merging_tracks_keeps_the_speakers_already_placed() {
+        let mine = transcript(vec![attributed(0.0, "hi", Track::Mic, Some("Leo"))]);
+        let theirs = transcript(vec![attributed(1.0, "hello", Track::System, Some("Ana"))]);
+        let merged = Transcript::merge(vec![mine, theirs]).expect("merged");
+        assert_eq!(
+            merged.participants(),
+            vec!["Leo".to_owned(), "Ana".to_owned()]
+        );
+    }
+
+    #[test]
+    fn a_speakers_name_never_reaches_a_debug_line() {
+        let printed = format!("{:?}", attributed(0.0, "hi", Track::Mic, Some("Ana")));
+        assert!(!printed.contains("Ana"), "{printed}");
+        assert!(!printed.contains("hi"), "{printed}");
+        assert!(printed.contains("speaker_known: true"), "{printed}");
+    }
+
+    #[test]
+    fn prompt_text_joins_segments_and_drops_blanks() {
         let t = transcript(vec![
             segment(0.0, 1.0, "hello"),
             segment(1.0, 2.0, "   "),
             segment(2.0, 3.0, " there "),
         ]);
-        assert_eq!(t.to_plain_text(), "hello\nthere");
+        assert_eq!(t.to_prompt_text(), "hello\nthere");
     }
 
     #[test]

@@ -21,6 +21,7 @@ use std::sync::Mutex;
 #[serde(rename_all = "camelCase")]
 pub enum ProcessingStage {
     Transcribing,
+    Identifying,
     Summarizing,
     Saving,
 }

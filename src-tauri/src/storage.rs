@@ -197,6 +197,17 @@ fn render_note(summary: &Summary, transcript: &Transcript, now: DateTime<Local>)
         meta.engine, meta.model
     ));
 
+    let participants = transcript.participants();
+    if !participants.is_empty() {
+        out.push_str("## Participants\n\n");
+        for participant in &participants {
+            out.push_str("- ");
+            out.push_str(participant);
+            out.push('\n');
+        }
+        out.push('\n');
+    }
+
     out.push_str("## Summary\n\n");
     if summary.bullets.is_empty() {
         out.push_str("_No summary points recorded._\n");
@@ -239,7 +250,7 @@ fn render_note(summary: &Summary, transcript: &Transcript, now: DateTime<Local>)
     }
 
     out.push_str(DIVIDER);
-    out.push_str(&transcript.to_plain_text());
+    out.push_str(&transcript.to_note_text());
     out.push('\n');
     out
 }
@@ -284,6 +295,7 @@ mod tests {
             end,
             text: text.to_owned(),
             track: None,
+            speaker: None,
         }
     }
 
@@ -326,7 +338,7 @@ mod tests {
         assert_eq!(parsed.engine, "local");
         assert_eq!(parsed.model, "claude-sonnet-5");
         assert_eq!(parsed.language.as_deref(), Some("en"));
-        assert_eq!(parsed.transcript_text, t.to_plain_text());
+        assert_eq!(parsed.transcript_text, t.to_note_text());
         assert!(parsed.summary_text.contains("Discussed the roadmap"));
         assert!(parsed.summary_text.contains("Ship on Friday"));
         assert!(parsed.summary_text.contains("Write the release notes"));
@@ -411,7 +423,50 @@ mod tests {
             "the temp file must not survive a successful write"
         );
         let parsed = read_note(dir.path()).unwrap();
-        assert_eq!(parsed.transcript_text, t.to_plain_text());
+        assert_eq!(parsed.transcript_text, t.to_note_text());
+    }
+
+    #[test]
+    fn identified_speakers_are_listed_and_written_onto_every_line() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let t = Transcript {
+            segments: vec![
+                Segment {
+                    speaker: Some("Leo".to_owned()),
+                    ..segment(0.0, 2.0, "morning")
+                },
+                Segment {
+                    speaker: Some("Ana".to_owned()),
+                    ..segment(74.0, 76.0, "morning Leo")
+                },
+            ],
+            ..transcript()
+        };
+
+        write_note_at(dir.path(), &summary("Weekly sync"), &t, fixed_now()).expect("write");
+        let written = std::fs::read_to_string(dir.path().join("notes.md")).expect("read");
+
+        assert!(written.contains("## Participants"), "{written}");
+        assert!(written.contains("- Leo\n- Ana"), "{written}");
+        assert!(written.contains("[01:14] Ana: morning Leo"), "{written}");
+    }
+
+    #[test]
+    fn a_meeting_with_nobody_identified_gets_no_participants_section() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        write_note_at(
+            dir.path(),
+            &summary("Weekly sync"),
+            &transcript(),
+            fixed_now(),
+        )
+        .expect("write");
+        let written = std::fs::read_to_string(dir.path().join("notes.md")).expect("read");
+
+        assert!(
+            !written.contains("## Participants"),
+            "an empty section says less than no section: {written}"
+        );
     }
 
     #[test]

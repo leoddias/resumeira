@@ -41,6 +41,10 @@ pub struct Settings {
     pub summary_cli: AgentCli,
     /// Model override; `None` uses the provider's default.
     pub summary_model: Option<String>,
+    /// Whether a meeting's speakers are identified before it is summarized
+    /// (ADR-0021). On by default; it costs one extra call to the engine that
+    /// already receives the transcript, and no new destination.
+    pub identify_speakers: bool,
     pub audio_retention: AudioRetention,
     /// Anonymous usage and crash reporting. Off unless explicitly enabled
     /// (ADR-0010) — nothing in this app turns it on by itself.
@@ -56,6 +60,7 @@ impl Default for Settings {
             summary_provider: SummaryProvider::Anthropic,
             summary_cli: AgentCli::Claude,
             summary_model: None,
+            identify_speakers: true,
             audio_retention: AudioRetention::Keep,
             telemetry_opt_in: false,
         }

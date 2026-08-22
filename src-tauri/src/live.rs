@@ -6,9 +6,10 @@
 
 use crate::audio::{decoder, Track};
 use crate::config::Settings;
-use crate::pipeline::{Summarizer, Transcriber};
+use crate::diarize::{self, Turn};
+use crate::pipeline::{SpeakerIdentifier, Summarizer, Transcriber};
 use crate::secrets::SecretStore;
-use crate::summarize::{self, cli, SummarizeError, Summary, SummaryEngine};
+use crate::summarize::{self, cli, ChatMessage, SummarizeError, Summary, SummaryEngine};
 use crate::transcribe::routing::{self, Capabilities, Route};
 use crate::transcribe::{api, local, model, Engine, TranscribeError, Transcript};
 use std::path::{Path, PathBuf};
@@ -41,6 +42,36 @@ impl LiveContext {
     /// The engine that will run, or the error explaining why none can.
     pub fn route(&self) -> Result<Route, TranscribeError> {
         routing::route(&self.settings.transcription, self.capabilities())
+    }
+
+    /// Runs the user's chosen summary engine over `messages`, returning the
+    /// engine's name for provenance and its raw reply.
+    ///
+    /// Shared by the summary and the speaker step so there is exactly one
+    /// place that decides which engine runs. The engine is whatever the user
+    /// chose, and only that: a missing key never reaches for an installed
+    /// CLI, and a missing CLI never reaches for a key (ADR-0020).
+    async fn complete(
+        &self,
+        messages: &[ChatMessage],
+    ) -> Result<(&'static str, String), SummarizeError> {
+        match summary_source(&self.settings) {
+            SummarySource::Api(provider) => {
+                let key = self.secrets.get(provider.key_name()).map_err(|_| {
+                    SummarizeError::MissingKey {
+                        provider: provider.key_name(),
+                    }
+                })?;
+                let model = self.settings.effective_summary_model();
+                let reply =
+                    summarize::providers::complete(provider, &key, Some(&model), messages).await?;
+                Ok((provider.key_name(), reply))
+            }
+            SummarySource::Cli(which) => {
+                let reply = cli::complete(which, &self.cli_workdir, messages).await?;
+                Ok((which.id(), reply))
+            }
+        }
     }
 }
 
@@ -127,31 +158,35 @@ impl LiveSummarizer {
 
 impl Summarizer for LiveSummarizer {
     async fn summarize(&self, transcript: &Transcript) -> Result<Summary, SummarizeError> {
-        let settings = &self.context.settings;
-        let model = settings.effective_summary_model();
+        let model = self.context.settings.effective_summary_model();
         let messages = summarize::prompt::build(transcript, &summarize::prompt::SummaryOptions {});
-
-        // The engine is whatever the user chose, and only that. A missing key
-        // never reaches for an installed CLI, and a missing CLI never reaches
-        // for a key (ADR-0020).
-        let (source, reply) = match summary_source(settings) {
-            SummarySource::Api(provider) => {
-                let key = self.context.secrets.get(provider.key_name()).map_err(|_| {
-                    SummarizeError::MissingKey {
-                        provider: provider.key_name(),
-                    }
-                })?;
-                let reply =
-                    summarize::providers::complete(provider, &key, Some(&model), &messages).await?;
-                (provider.key_name(), reply)
-            }
-            SummarySource::Cli(which) => {
-                let reply = cli::complete(which, &self.context.cli_workdir, &messages).await?;
-                (which.id(), reply)
-            }
-        };
+        let (source, reply) = self.context.complete(&messages).await?;
 
         summarize::parse::parse_summary(source, &model, &reply).map(Summary::cleaned)
+    }
+}
+
+/// Identifies the speakers with the same engine that writes the summary.
+///
+/// Deliberately not its own provider setting: the transcript already goes to
+/// this engine to be summarized, so reusing it adds no destination the user
+/// has not already chosen (ADR-0021).
+pub struct LiveIdentifier {
+    context: Arc<LiveContext>,
+}
+
+impl LiveIdentifier {
+    pub fn new(context: Arc<LiveContext>) -> Self {
+        Self { context }
+    }
+}
+
+impl SpeakerIdentifier for LiveIdentifier {
+    async fn identify(&self, transcript: &Transcript) -> Result<Vec<Turn>, SummarizeError> {
+        let messages = diarize::prompt::build(transcript);
+        let (source, reply) = self.context.complete(&messages).await?;
+
+        diarize::parse::parse_turns(source, &reply)
     }
 }
 

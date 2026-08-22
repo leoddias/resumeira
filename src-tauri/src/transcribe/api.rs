@@ -256,6 +256,7 @@ impl ApiTranscriptResponse {
                 end: 0.0,
                 text: self.text,
                 track: None,
+                speaker: None,
             }]
         } else {
             self.segments
@@ -265,6 +266,7 @@ impl ApiTranscriptResponse {
                     end: segment.end,
                     text: segment.text,
                     track: None,
+                    speaker: None,
                 })
                 .collect()
         };

@@ -211,6 +211,7 @@ fn map_segment(raw: &RawSegment, samples: &[f32], sample_rate: u32) -> Option<Se
         end: end_secs,
         text: text.to_owned(),
         track: None,
+        speaker: None,
     })
 }
 

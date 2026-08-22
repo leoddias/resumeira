@@ -139,7 +139,10 @@ make is one of these three:
    summary provider you configured (`api.anthropic.com`, `api.openai.com`, or
    `api.groq.com`), with your key in the request header. There is no local
    summarization engine, so this happens for every meeting you summarize, not
-   only when you pick the cloud transcription engine.
+   only when you pick the cloud transcription engine. With **Identify who
+   spoke each line** on (Settings, on by default), the same transcript is sent
+   to that same provider a second time, to work out who was speaking. Turning
+   it off removes that second request; it adds no other destination.
 3. **Whisper model download** — downloading the selected local model (`tiny`
    through `large-v3-turbo`, up to ~1.6 GB) from
    `huggingface.co/ggerganov/whisper.cpp`, verified by SHA-256 before use,

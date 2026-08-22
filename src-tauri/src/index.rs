@@ -373,6 +373,7 @@ mod tests {
                 end: 1.0,
                 text: text.to_owned(),
                 track: None,
+                speaker: None,
             }],
             language: Some("en".to_owned()),
             engine: Engine::Local,

@@ -93,10 +93,12 @@ function describe(state: RecordingState): string {
   }
 }
 
-function processingLabel(stage: 'transcribing' | 'summarizing' | 'saving'): string {
+function processingLabel(stage: 'transcribing' | 'identifying' | 'summarizing' | 'saving'): string {
   switch (stage) {
     case 'transcribing':
       return 'Transcribing…';
+    case 'identifying':
+      return 'Identifying speakers…';
     case 'summarizing':
       return 'Writing notes…';
     case 'saving':

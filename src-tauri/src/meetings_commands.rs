@@ -4,9 +4,10 @@
 //! split is deliberate: the database is a cache that can be rebuilt, and the
 //! file is the thing the user owns (ADR-0007).
 
+use crate::audio::Track;
 use crate::index;
 use crate::storage;
-use crate::transcribe::Segment;
+use crate::transcribe;
 use rusqlite::Connection;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -72,6 +73,9 @@ pub struct TranscriptLine {
     pub text: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub track: Option<crate::audio::Track>,
+    /// Who said it, when the note recorded a name (ADR-0021).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speaker: Option<String>,
 }
 
 /// A meeting opened for reading. Mirrors `MeetingNote` in
@@ -187,33 +191,98 @@ fn resolve_meeting_folder(notes_root: &Path, folder: &str) -> Result<PathBuf, St
 
 /// Parses the transcript section back into lines.
 ///
-/// The written form is `[mm:ss] (track) text`; anything that does not match
-/// is kept as a line with no timestamp rather than dropped, because losing
-/// transcript text to a format change would be worse than showing it plainly.
+/// The written form is `[mm:ss] Speaker: text`, as
+/// [`Transcript::to_note_text`] writes it. Every part is optional on the way
+/// back in: a line that does not match is kept whole, with no timestamp and
+/// no speaker, because losing transcript text to a format change would be
+/// worse than showing it plainly. That is also what keeps notes written
+/// before ADR-0021 - bare text lines - readable.
 fn parse_transcript(text: &str) -> Vec<TranscriptLine> {
     text.lines()
         .filter(|line| !line.trim().is_empty())
-        .map(|line| TranscriptLine {
-            start: 0.0,
-            text: line.trim().to_owned(),
-            track: None,
-        })
+        .map(|line| parse_transcript_line(line.trim()))
         .collect()
 }
 
-/// Segments rendered into the transcript section of a note.
-pub fn render_segments(segments: &[Segment]) -> String {
-    segments
-        .iter()
-        .map(|segment| segment.text.trim())
-        .filter(|text| !text.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n")
+/// One written line, read back as far as it parses.
+fn parse_transcript_line(line: &str) -> TranscriptLine {
+    let Some((start, rest)) = split_timestamp(line) else {
+        return TranscriptLine {
+            start: 0.0,
+            text: line.to_owned(),
+            track: None,
+            speaker: None,
+        };
+    };
+
+    match split_speaker(rest) {
+        Some((label, text)) => {
+            // The two fallback labels are how an unidentified line is
+            // written, so they come back as the track they stand for rather
+            // than as somebody called "You".
+            let (track, speaker) = match label {
+                transcribe::MIC_LABEL => (Some(Track::Mic), None),
+                transcribe::SYSTEM_LABEL => (Some(Track::System), None),
+                transcribe::UNKNOWN_LABEL => (None, None),
+                name => (None, Some(name.to_owned())),
+            };
+            TranscriptLine {
+                start,
+                text: text.to_owned(),
+                track,
+                speaker,
+            }
+        }
+        None => TranscriptLine {
+            start,
+            text: rest.to_owned(),
+            track: None,
+            speaker: None,
+        },
+    }
 }
+
+/// Splits a leading `[mm:ss]` or `[h:mm:ss]` off, returning the seconds it
+/// stands for and the rest of the line.
+fn split_timestamp(line: &str) -> Option<(f64, &str)> {
+    let rest = line.strip_prefix('[')?;
+    let (stamp, rest) = rest.split_once(']')?;
+
+    let mut seconds = 0u64;
+    let mut parts = 0;
+    for part in stamp.split(':') {
+        seconds = seconds.checked_mul(60)?.checked_add(part.parse().ok()?)?;
+        parts += 1;
+    }
+    if !(2..=3).contains(&parts) {
+        return None;
+    }
+
+    Some((seconds as f64, rest.trim_start()))
+}
+
+/// Splits the `Speaker: ` label off the text.
+///
+/// Every timestamped line this app writes carries a label, so the first
+/// `": "` is the separator and a colon later in the sentence is just speech.
+/// The length cap is a guard against a file this app did not write.
+fn split_speaker(rest: &str) -> Option<(&str, &str)> {
+    let (label, text) = rest.split_once(": ")?;
+    let label = label.trim();
+    if label.is_empty() || label.chars().count() > MAX_SPEAKER_LEN {
+        return None;
+    }
+    Some((label, text.trim()))
+}
+
+/// Mirrors `diarize`'s own cap, so a label this app wrote is always a label
+/// this app reads back.
+const MAX_SPEAKER_LEN: usize = 60;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::transcribe::{Segment, Transcript};
 
     #[test]
     fn a_folder_outside_the_notes_root_is_refused() {
@@ -260,5 +329,99 @@ mod tests {
         assert_eq!(lines.len(), 2);
         assert_eq!(lines[0].text, "first line");
         assert_eq!(lines[1].text, "second line");
+        assert_eq!(
+            lines[0].start, 0.0,
+            "a note written before ADR-0021 still reads back, just without a clock"
+        );
+    }
+
+    #[test]
+    fn a_written_line_reads_back_with_its_timestamp_and_speaker() {
+        let lines = parse_transcript("[01:14] Ana: morning Leo");
+        assert_eq!(lines[0].start, 74.0);
+        assert_eq!(lines[0].speaker.as_deref(), Some("Ana"));
+        assert_eq!(lines[0].text, "morning Leo");
+        assert_eq!(lines[0].track, None);
+    }
+
+    #[test]
+    fn an_hour_long_meeting_keeps_its_timestamps() {
+        let lines = parse_transcript("[1:00:05] Ana: still here");
+        assert_eq!(lines[0].start, 3605.0);
+    }
+
+    #[test]
+    fn the_track_fallbacks_read_back_as_tracks_not_as_people() {
+        let lines = parse_transcript("[00:00] You: mine\n[00:02] Others: theirs");
+        assert_eq!(lines[0].track, Some(Track::Mic));
+        assert_eq!(lines[0].speaker, None);
+        assert_eq!(lines[1].track, Some(Track::System));
+        assert_eq!(lines[1].text, "theirs");
+    }
+
+    #[test]
+    fn a_colon_inside_speech_stays_inside_the_speech() {
+        let lines = parse_transcript("[00:03] Ana: so here is the thing: we ship on Friday");
+        assert_eq!(lines[0].speaker.as_deref(), Some("Ana"));
+        assert_eq!(lines[0].text, "so here is the thing: we ship on Friday");
+    }
+
+    #[test]
+    fn a_named_line_keeps_the_name_and_gives_up_the_track() {
+        let lines = parse_transcript("[00:00] Leo: morning");
+        assert_eq!(lines[0].speaker.as_deref(), Some("Leo"));
+        assert_eq!(
+            lines[0].track, None,
+            "the note writes the name instead of the track, by decision (ADR-0021)"
+        );
+    }
+
+    #[test]
+    fn a_participant_actually_called_you_reads_back_as_the_track() {
+        let lines = parse_transcript("[00:00] You: morning");
+        assert_eq!(
+            (lines[0].track, lines[0].speaker.clone()),
+            (Some(Track::Mic), None),
+            "the fallback labels are reserved words on disk; a person named You loses to them"
+        );
+    }
+
+    #[test]
+    fn an_unattributable_line_is_written_and_read_as_nobody() {
+        let lines = parse_transcript("[00:03] Unknown: somebody said this");
+        assert_eq!(lines[0].speaker, None);
+        assert_eq!(lines[0].track, None);
+        assert_eq!(lines[0].text, "somebody said this");
+    }
+
+    #[test]
+    fn a_round_trip_through_the_note_form_preserves_who_spoke() {
+        let transcript = Transcript {
+            segments: vec![
+                Segment {
+                    start: 0.0,
+                    end: 1.0,
+                    text: "morning".to_owned(),
+                    track: Some(Track::Mic),
+                    speaker: Some("Leo".to_owned()),
+                },
+                Segment {
+                    start: 74.0,
+                    end: 75.0,
+                    text: "morning Leo".to_owned(),
+                    track: Some(Track::System),
+                    speaker: None,
+                },
+            ],
+            language: None,
+            engine: transcribe::Engine::Local,
+        };
+
+        let lines = parse_transcript(&transcript.to_note_text());
+
+        assert_eq!(lines[0].speaker.as_deref(), Some("Leo"));
+        assert_eq!(lines[0].start, 0.0);
+        assert_eq!(lines[1].track, Some(Track::System));
+        assert_eq!(lines[1].start, 74.0);
     }
 }

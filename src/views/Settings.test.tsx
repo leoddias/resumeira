@@ -31,6 +31,7 @@ const localSettings: SettingsType = {
   summaryProvider: 'anthropic',
   summaryCli: 'claude',
   summaryModel: null,
+  identifySpeakers: true,
   audioRetention: 'keep',
   telemetryOptIn: false,
 };
@@ -185,6 +186,25 @@ describe('Settings', () => {
     // The API-only fields would be dead controls under this engine.
     expect(screen.queryByLabelText('Summary provider')).toBeNull();
     expect(screen.queryByLabelText('Summary model')).toBeNull();
+  });
+
+  it('saves speaker identification being turned off', async () => {
+    saveSettings.mockResolvedValue(undefined);
+    await renderReady();
+
+    await userEvent.click(screen.getByLabelText(/Identify who spoke/i));
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() =>
+      expect(saveSettings).toHaveBeenCalledWith(
+        expect.objectContaining({ identifySpeakers: false }),
+      ),
+    );
+  });
+
+  it('says the extra request happens, so nobody is surprised by the bill', async () => {
+    await renderReady();
+    expect(screen.getByText(/one extra request to the summary engine/i)).toBeInTheDocument();
   });
 
   it('saves the chosen agent CLI', async () => {

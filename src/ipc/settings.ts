@@ -42,6 +42,8 @@ export interface Settings {
   summaryCli: AgentCli;
   /** Null uses the provider's default model. */
   summaryModel: string | null;
+  /** Whether speakers are identified before the summary is written. */
+  identifySpeakers: boolean;
   audioRetention: AudioRetention;
   /** Off unless the user turned it on (ADR-0010). */
   telemetryOptIn: boolean;

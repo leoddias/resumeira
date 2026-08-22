@@ -65,6 +65,8 @@ never the privacy rules or the test bar.
 - [x] `tauri-plugin-updater` + GitHub Releases workflow (unsigned)
 - [x] README: permissions, install, SmartScreen note, data locations, backup,
       limitations, telemetry statement
+- [x] Speaker identification: label each transcript line with who spoke,
+      named where the conversation names them (ADR-0021)
 - [ ] **Gate:** use Resumeira for every meeting for 2 weeks
 
 ## Validation checkpoint (after M5)
@@ -78,7 +80,8 @@ tool, stop investing.
 - Meeting auto-detection (Zoom/Meet/Teams running → prompt to record) — the
   highest-value retention feature; "I forgot to hit record" is churn #1
 - Real-time streaming transcription with live notes during the meeting
-- Diarization from the two tracks ("you" vs "them"), then speaker labels
+- Acoustic diarization (VAD + speaker embeddings) as the upgrade path for
+  ADR-0021's LLM-based speaker labels, which shipped in M5
 - macOS build (ScreenCaptureKit capture + permissions) — then Linux (PipeWire)
 - Editable summary templates / per-meeting-type prompts
 - Code-signing certificate for a public launch
@@ -99,6 +102,21 @@ tool, stop investing.
   chunk-liveness timeout or an ADR adding an error path to the trait —
   decide before the dogfood gate, since "my headphones died and Resumeira
   said it was still recording" is a trust-breaking bug.
+- **`storage::parse_note` splits on the first occurrence of the divider**, so
+  any model-written text containing `
+---
+
+## Transcript
+
+` verbatim -
+  a summary bullet is enough, and meeting content steers it - makes the note
+  read back with the summary rendered as transcript. Pre-existing, proven by
+  the ADR-0021 privacy review; the note's bytes stay intact, but no rebuild
+  repairs the derived view. Needs a write-side guard or an offset in the
+  meta line, not just an anchored search
+- The README's outbound-request list predates ADR-0020: it documents the
+  three API destinations but never mentions the agent-CLI summary engine,
+  which is the one path that uploads a transcript outside this app's reach
 - Band-limited (sinc) resampling — M1's linear interpolation has no
   anti-aliasing filter; fine for speech into Whisper, revisit if audio is
   ever reused for anything else

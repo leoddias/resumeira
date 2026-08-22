@@ -124,6 +124,7 @@ async fn run_pipeline<R: Runtime>(
         .map(|store| store.get())
         .unwrap_or_default();
     let retention = settings.audio_retention;
+    let identify_speakers = settings.identify_speakers;
 
     let secrets: std::sync::Arc<dyn crate::secrets::SecretStore> =
         std::sync::Arc::new(crate::secrets::OsKeychain);
@@ -136,21 +137,31 @@ async fn run_pipeline<R: Runtime>(
     });
 
     let transcriber = crate::live::LiveTranscriber::new(context.clone());
-    let summarizer = crate::live::LiveSummarizer::new(context);
+    let summarizer = crate::live::LiveSummarizer::new(context.clone());
+    // Absent, not disabled: a step the user turned off is never constructed,
+    // so it cannot report a stage the user was not expecting (ADR-0021).
+    let identifier = identify_speakers.then(|| crate::live::LiveIdentifier::new(context));
 
     let stage_app = app.clone();
-    let outcome =
-        crate::pipeline::process(folder, &transcriber, &summarizer, retention, move |stage| {
+    let outcome = crate::pipeline::process(
+        folder,
+        &transcriber,
+        &summarizer,
+        identifier.as_ref(),
+        retention,
+        move |stage| {
             if let Some(manager) = stage_app.try_state::<SessionManager>() {
                 let state = manager.set_stage(match stage {
                     crate::pipeline::Stage::Transcribing => ProcessingStage::Transcribing,
+                    crate::pipeline::Stage::Identifying => ProcessingStage::Identifying,
                     crate::pipeline::Stage::Summarizing => ProcessingStage::Summarizing,
                     crate::pipeline::Stage::Saving => ProcessingStage::Saving,
                 });
                 publish(&stage_app, &state);
             }
-        })
-        .await?;
+        },
+    )
+    .await?;
 
     // The index follows the file, never the other way round (ADR-0007). A
     // failed index costs search until the next rebuild, not the note.

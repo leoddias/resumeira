@@ -26,6 +26,8 @@ export interface TranscriptLine {
   text: string;
   /** Which side spoke, when the engine could tell. */
   track?: Track;
+  /** Who spoke, when the speaker step named them (ADR-0021). */
+  speaker?: string;
 }
 
 /** A meeting opened for reading. */

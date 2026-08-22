@@ -61,6 +61,7 @@ impl Transcriber for MeasuringTranscriber {
                 end: seconds,
                 text: format!("{track:?} captured {seconds:.2} seconds"),
                 track: Some(track),
+                speaker: None,
             }],
             language: Some("en".to_owned()),
             engine: Engine::Local,
@@ -141,6 +142,7 @@ async fn a_real_recording_becomes_a_real_note() {
         &folder,
         &MeasuringTranscriber,
         &StubSummarizer,
+        None::<&resumeira_lib::live::LiveIdentifier>,
         AudioRetention::Keep,
         |stage| println!("stage: {stage:?}"),
     )

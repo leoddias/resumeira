@@ -34,6 +34,7 @@ const SETTINGS: Settings = {
   summaryProvider: 'anthropic',
   summaryCli: 'claude',
   summaryModel: null,
+  identifySpeakers: true,
   audioRetention: 'keep',
   telemetryOptIn: false,
 };

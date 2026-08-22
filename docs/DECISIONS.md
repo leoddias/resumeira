@@ -337,3 +337,50 @@ my credentials" is, to the child process, just more prompt — so every CLI is
 pinned to a no-tools, no-MCP profile, and no CLI may be added without one.
 That pinning is measured, not assumed: an empty allow-list does not restrict
 `claude`, a deny-list does.
+
+## ADR-0021 — Speakers are identified by the configured summary LLM, not by acoustics
+**Date:** 2026-08-22 · **Status:** accepted
+**Decision:** A meeting's speakers are identified by a `diarize` step that
+runs between transcription and summarization, sending the timestamped,
+track-tagged transcript to the *same* engine the user already configured for
+summaries (BYOK API or agent CLI). It returns turn ranges — `{"from", "to",
+"speaker"}` — which fill a new `Segment.speaker` holding either a real name
+taken from the conversation or a stable `Speaker N` label. Failure to
+identify speakers is never fatal: the note is written unlabelled. This pulls
+the diarization item forward from v0.2 at the user's explicit request.
+**Why:** The two tracks already answer "me vs. them" (ADR-0004), but every
+remote participant collapses into one bucket, and a note whose action items
+say "someone will send the contract" is worth much less than one that says
+"Ana will". Rejected: **acoustic diarization** (VAD + speaker embeddings over
+`system.opus`) — it separates voices far better and stays offline, but it is
+new code in the paranoid core, a second model to download, and it produces
+only anonymous clusters, so a naming pass would be needed *anyway*; it stays
+the upgrade path, and `Segment.speaker` is shaped so it can fill the same
+field later. Rejected: **a diarizing cloud provider** (Deepgram/AssemblyAI) —
+accurate and cheap to wire, but it adds a transcription vendor and breaks the
+local route, which is the product's pitch. Rejected: **folding speaker labels
+into the existing summary call** — one call is cheaper, but it makes the
+whole note fail when the labelling drifts, and the summary parser is the last
+thing that should get more shapes to tolerate. Rejected: **one JSON entry per
+line** — an hour of speech is hundreds of segments, and people speak in turns
+anyway.
+**Consequences:** One extra LLM call per meeting, over the transcript, so the
+step is a Settings toggle (on by default) and is skipped when off. No new
+network destination: it reuses the engine and key the user already chose, so
+the "explicit routing" rule is untouched — but the CLI route's caveat carries
+over unchanged, and the transcript is still untrusted input reaching an
+agent, so `diarize` uses the same pinned no-tools profile.
+A named line writes the name *instead of* its track, not alongside it: a
+reader of `notes.md` is better served by "Ana" than by "Ana (system)", and the
+file is meant to be read directly. So a reloaded note knows the track only for
+the lines nobody could name - which is exactly when the track is the best
+answer available. The summary prompt now carries that same label on every
+line, including when this step is off, so an owner can be attributed at all;
+summaries will read slightly differently than before for that reason alone.
+`notes.md` gains a per-line form, `[mm:ss] Ana: text`, replacing today's bare
+text lines; the parser keeps reading old notes, and any line that does not
+match is kept verbatim rather than dropped. This also repairs an existing
+loss: track attribution was computed, then discarded at write time, so the
+"You/Others" badge never survived a reload. Participants are derived in Rust
+from the labelled transcript, not asked of the model, so ADR-0006's fixed
+summary template stands unchanged.

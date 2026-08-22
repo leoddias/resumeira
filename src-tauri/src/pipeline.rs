@@ -12,6 +12,7 @@
 
 use crate::audio::Track;
 use crate::config::AudioRetention;
+use crate::diarize::Turn;
 use crate::storage;
 use crate::summarize::{SummarizeError, Summary};
 use crate::transcribe::{TranscribeError, Transcript};
@@ -21,6 +22,9 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stage {
     Transcribing,
+    /// Working out who spoke each line (ADR-0021). Skipped when the user
+    /// turned speaker identification off.
+    Identifying,
     Summarizing,
     Saving,
 }
@@ -64,6 +68,18 @@ pub trait Transcriber {
     ) -> impl std::future::Future<Output = Result<Transcript, TranscribeError>> + Send;
 }
 
+/// Works out who spoke each line of a transcript.
+///
+/// Returns turns rather than a labelled transcript so the step stays pure at
+/// this seam: `diarize::apply` decides what a turn is allowed to touch, and
+/// it is tested on its own.
+pub trait SpeakerIdentifier {
+    fn identify(
+        &self,
+        transcript: &Transcript,
+    ) -> impl std::future::Future<Output = Result<Vec<Turn>, SummarizeError>> + Send;
+}
+
 /// Turns a transcript into a summary.
 pub trait Summarizer {
     fn summarize(
@@ -85,16 +101,18 @@ pub struct Outcome {
 /// The order is not arbitrary: the note is written before the audio is
 /// considered disposable, so a retention setting can never delete the only
 /// copy of a meeting whose note failed to save.
-pub async fn process<T, S, P>(
+pub async fn process<T, S, D, P>(
     folder: &Path,
     transcriber: &T,
     summarizer: &S,
+    identifier: Option<&D>,
     retention: AudioRetention,
     mut on_stage: P,
 ) -> Result<Outcome, PipelineError>
 where
     T: Transcriber,
     S: Summarizer,
+    D: SpeakerIdentifier,
     P: FnMut(Stage),
 {
     on_stage(Stage::Transcribing);
@@ -136,6 +154,18 @@ where
         // Nobody spoke. Sending this to a model costs money and invents
         // content, so stop here and say so.
         return Err(PipelineError::NoAudio);
+    }
+
+    let mut transcript = transcript;
+    if let Some(identifier) = identifier {
+        on_stage(Stage::Identifying);
+        match identifier.identify(&transcript).await {
+            Ok(turns) => crate::diarize::apply(&mut transcript, &turns),
+            // Never fatal. A note whose lines say "You" and "Others" is worth
+            // far more than no note, and this step is the only one in the
+            // pipeline whose absence costs nothing but detail.
+            Err(error) => log::warn!("could not identify speakers: {}", error.log_safe()),
+        }
     }
 
     on_stage(Stage::Summarizing);
@@ -189,6 +219,7 @@ mod tests {
             end: start + 1.0,
             text: text.to_owned(),
             track: Some(track),
+            speaker: None,
         }
     }
 
@@ -260,7 +291,7 @@ mod tests {
             }
             Ok(Summary {
                 title: "Weekly sync".to_owned(),
-                bullets: vec![transcript.to_plain_text()],
+                bullets: vec![transcript.to_prompt_text()],
                 decisions: vec![],
                 action_items: vec![ActionItem {
                     task: "Ship it".to_owned(),
@@ -272,18 +303,157 @@ mod tests {
         }
     }
 
+    /// Answers with fixed turns, or fails, standing in for the model.
+    struct FakeIdentifier {
+        turns: Vec<Turn>,
+        fails: bool,
+    }
+
+    impl FakeIdentifier {
+        fn returning(turns: Vec<Turn>) -> Self {
+            Self {
+                turns,
+                fails: false,
+            }
+        }
+
+        fn failing() -> Self {
+            Self {
+                turns: Vec::new(),
+                fails: true,
+            }
+        }
+    }
+
+    impl SpeakerIdentifier for FakeIdentifier {
+        async fn identify(&self, _transcript: &Transcript) -> Result<Vec<Turn>, SummarizeError> {
+            if self.fails {
+                return Err(SummarizeError::EmptySummary);
+            }
+            Ok(self.turns.clone())
+        }
+    }
+
     async fn run(
         folder: &Path,
         transcriber: &FakeTranscriber,
         summarizer: &FakeSummarizer,
         retention: AudioRetention,
     ) -> (Result<Outcome, PipelineError>, Vec<Stage>) {
+        run_with(
+            folder,
+            transcriber,
+            summarizer,
+            None::<&FakeIdentifier>,
+            retention,
+        )
+        .await
+    }
+
+    async fn run_with(
+        folder: &Path,
+        transcriber: &FakeTranscriber,
+        summarizer: &FakeSummarizer,
+        identifier: Option<&FakeIdentifier>,
+        retention: AudioRetention,
+    ) -> (Result<Outcome, PipelineError>, Vec<Stage>) {
         let mut stages = Vec::new();
-        let result = process(folder, transcriber, summarizer, retention, |stage| {
-            stages.push(stage)
-        })
+        let result = process(
+            folder,
+            transcriber,
+            summarizer,
+            identifier,
+            retention,
+            |stage| stages.push(stage),
+        )
         .await;
         (result, stages)
+    }
+
+    fn turn(from: usize, to: usize, speaker: &str) -> Turn {
+        Turn {
+            from,
+            to,
+            speaker: speaker.to_owned(),
+        }
+    }
+
+    #[tokio::test]
+    async fn identified_speakers_reach_the_note_and_the_summarizer() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        write_track(dir.path(), Track::Mic);
+        write_track(dir.path(), Track::System);
+        let transcriber =
+            FakeTranscriber::new(vec![(Track::Mic, "my line"), (Track::System, "their line")]);
+        let identifier = FakeIdentifier::returning(vec![turn(0, 0, "Leo"), turn(1, 1, "Ana")]);
+
+        let (result, stages) = run_with(
+            dir.path(),
+            &transcriber,
+            &FakeSummarizer { fail: false },
+            Some(&identifier),
+            AudioRetention::Keep,
+        )
+        .await;
+
+        let outcome = result.expect("outcome");
+        assert_eq!(
+            outcome.transcript.participants(),
+            vec!["Leo".to_owned(), "Ana".to_owned()]
+        );
+        assert!(
+            stages.contains(&Stage::Identifying),
+            "the user is told what the wait is for: {stages:?}"
+        );
+        assert!(
+            std::fs::read_to_string(outcome.note.clone())
+                .expect("note")
+                .contains("Ana: their line"),
+            "the label has to survive to disk, not just to the summarizer"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_speaker_step_still_produces_the_note() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        write_track(dir.path(), Track::Mic);
+        let transcriber = FakeTranscriber::new(vec![(Track::Mic, "my line")]);
+
+        let (result, _) = run_with(
+            dir.path(),
+            &transcriber,
+            &FakeSummarizer { fail: false },
+            Some(&FakeIdentifier::failing()),
+            AudioRetention::Keep,
+        )
+        .await;
+
+        let outcome = result.expect("a meeting is never lost to an unnamed speaker");
+        assert!(
+            outcome.transcript.participants().is_empty(),
+            "nothing identified means nobody named, never a guess"
+        );
+    }
+
+    #[tokio::test]
+    async fn no_identifier_means_no_identifying_stage() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        write_track(dir.path(), Track::Mic);
+        let transcriber = FakeTranscriber::new(vec![(Track::Mic, "my line")]);
+
+        let (result, stages) = run(
+            dir.path(),
+            &transcriber,
+            &FakeSummarizer { fail: false },
+            AudioRetention::Keep,
+        )
+        .await;
+
+        result.expect("outcome");
+        assert!(
+            !stages.contains(&Stage::Identifying),
+            "a step the user turned off must not report progress: {stages:?}"
+        );
     }
 
     #[tokio::test]
@@ -328,7 +498,11 @@ mod tests {
         .await;
 
         let outcome = result.expect("outcome");
-        assert_eq!(outcome.transcript.to_plain_text(), "my line\ntheir line");
+        assert_eq!(
+            outcome.transcript.to_prompt_text(),
+            "You: my line\nOthers: their line",
+            "with no speaker step, the track is still what the summarizer is told"
+        );
         assert_eq!(
             outcome.transcript.segments[0].track,
             Some(Track::Mic),
@@ -372,7 +546,7 @@ mod tests {
         .await;
 
         let outcome = result.expect("half a meeting still beats no note");
-        assert_eq!(outcome.transcript.to_plain_text(), "my line");
+        assert_eq!(outcome.transcript.to_prompt_text(), "You: my line");
     }
 
     #[tokio::test]

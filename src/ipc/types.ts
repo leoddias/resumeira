@@ -36,7 +36,7 @@ export type RecordingState =
   | {
       status: 'processing';
       /** Coarse stage so the UI can say something honest while waiting. */
-      stage: 'transcribing' | 'summarizing' | 'saving';
+      stage: 'transcribing' | 'identifying' | 'summarizing' | 'saving';
     }
   | { status: 'failed'; error: string };
 

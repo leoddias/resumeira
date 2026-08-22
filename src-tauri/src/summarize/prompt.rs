@@ -81,7 +81,7 @@ fn user_prompt(transcript: &Transcript) -> String {
         "{language_hint}Summarize the following meeting transcript.\n\n\
          Transcript:\n\
          {text}",
-        text = transcript.to_plain_text()
+        text = transcript.to_prompt_text()
     )
 }
 
@@ -115,6 +115,7 @@ mod tests {
                     end: *end,
                     text: (*text).to_owned(),
                     track: None,
+                    speaker: None,
                 })
                 .collect(),
             language: language.map(|l| l.to_owned()),

@@ -64,7 +64,9 @@ pub fn parse_summary(
 
 /// Finds the JSON object in a model's reply, whether it's the whole reply,
 /// wrapped in a fenced ```json block, or surrounded by prose.
-fn extract_json(body: &str) -> Option<String> {
+/// Shared with `diarize::parse`: every reply this app reads back comes from
+/// the same class of model, wrapped in the same prose and fences.
+pub(crate) fn extract_json(body: &str) -> Option<String> {
     extract_fenced(body).or_else(|| extract_braces(body))
 }
 

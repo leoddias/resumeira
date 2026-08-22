@@ -293,6 +293,17 @@ function SettingsForm({
       <label className="settings__field settings__field--checkbox">
         <input
           type="checkbox"
+          checked={draft.identifySpeakers}
+          onChange={(event) => setDraft({ ...draft, identifySpeakers: event.target.checked })}
+        />
+        <span>
+          Identify who spoke each line — one extra request to the summary engine above, per meeting
+        </span>
+      </label>
+
+      <label className="settings__field settings__field--checkbox">
+        <input
+          type="checkbox"
           checked={draft.telemetryOptIn}
           onChange={(event) => setDraft({ ...draft, telemetryOptIn: event.target.checked })}
         />

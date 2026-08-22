@@ -7,6 +7,7 @@
 pub mod audio;
 pub mod commands;
 pub mod config;
+pub mod diarize;
 pub mod index;
 pub mod live;
 pub mod meetings_commands;

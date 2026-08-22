@@ -235,6 +235,40 @@ body {
   border-left-color: #4a7fb5;
 }
 
+/*
+ * Six colours for named speakers. TranscriptView hashes a name into a slot,
+ * so one person keeps one colour for as long as the note exists; six is
+ * enough for the meetings this app is for, and a seventh person simply shares
+ * a colour rather than being left unmarked.
+ */
+.transcript__line--speaker-0 {
+  border-left-color: var(--accent);
+}
+
+.transcript__line--speaker-1 {
+  border-left-color: #4a7fb5;
+}
+
+.transcript__line--speaker-2 {
+  border-left-color: #b5794a;
+}
+
+.transcript__line--speaker-3 {
+  border-left-color: #6a9a5b;
+}
+
+.transcript__line--speaker-4 {
+  border-left-color: #9a5b8f;
+}
+
+.transcript__line--speaker-5 {
+  border-left-color: #a8a04a;
+}
+
+.transcript__line--named .transcript__track {
+  font-weight: 600;
+}
+
 .transcript__time {
   color: var(--muted);
   font-variant-numeric: tabular-nums;
