@@ -82,7 +82,8 @@ PulseAudio monitor source on Linux. What that costs you per platform:
 
 - **macOS 13+**, Apple Silicon. The app asks for **Screen Recording**
   permission, because ScreenCaptureKit is the only supported way to capture
-  system audio; no video is ever requested or read. Grant it under *System
+  system audio; the app registers no video handler and never receives, stores
+  or sends an image of your screen. Grant it under *System
   Settings > Privacy & Security > Screen & System Audio Recording*. A
   headless Mac cannot record system audio at all — ScreenCaptureKit needs a
   display attached.
@@ -139,7 +140,7 @@ npm run tauri build
   Screen & System Audio Recording*, because ScreenCaptureKit is the only
   supported way to capture system audio there (ADR-0024). The app registers no
   video handler and never reads a frame — the permission is named after
-  screens, but only audio is taken. Until it is granted, the system track
+  screens, but only audio ever reaches the app. Until it is granted, the system track
   fails to start and says exactly where to fix it; the microphone track is
   unaffected.
 

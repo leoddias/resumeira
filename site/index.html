@@ -327,9 +327,9 @@
         ScreenCaptureKit, <strong>Linux</strong> through the default output's PulseAudio monitor
         (PipeWire serves this too). Two things follow. On macOS the app asks for
         <strong>Screen Recording</strong>
-        permission, because that is the only supported way to record system audio — no image of your
-        screen is ever captured, and the app registers no video handler at all. On Linux you need
-        PulseAudio or PipeWire; a machine running bare ALSA has no monitor to record.
+        permission, because that is the only supported way to record system audio — the app
+        registers no video handler and never receives, stores or sends an image of your screen. On
+        Linux you need PulseAudio or PipeWire; a machine running bare ALSA has no monitor to record.
         <strong
           >Windows is still the only one of the three with a recorded meeting behind it</strong
         >

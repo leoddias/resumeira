@@ -23,11 +23,11 @@ jobs:
       - run: npm run build
 
   desktop:
-    # Windows is the product target (ADR-0003): it is the only platform where
-    # system-audio capture exists. macOS and Linux build here anyway, because
-    # a port that is never compiled rots — the `#[cfg(not(windows))]` stubs,
-    # the keychain backends and the bundler config all get a real check, and
-    # the release workflow ships from the same three runners (ADR-0023).
+    # All three platforms record system audio, each through its own backend
+    # (ADR-0024), and each backend is `#[cfg]`-gated — so it is only ever
+    # compiled, linted and tested on its own runner. That makes this matrix
+    # the only thing standing between a platform-specific mistake and a user;
+    # the release workflow ships from these same three runners (ADR-0023).
     name: Build (${{ matrix.label }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
@@ -94,8 +94,10 @@ jobs:
         if: matrix.os == 'windows-latest'
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
 
+      # Clippy runs on every platform, not just Windows: `macos.rs` and
+      # `linux.rs` are `#[cfg]`-gated, so a Windows-only lint pass never sees
+      # either of them. The compilation is shared with the build below.
       - name: Clippy
-        if: matrix.os == 'windows-latest'
         timeout-minutes: 45
         run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 
@@ -115,6 +117,16 @@ jobs:
       - name: Verify the frontend is embedded in the binary
         shell: bash
         run: bash .github/scripts/verify-embedded-frontend.sh
+
+      # macOS terminates an app that touches the microphone or
+      # ScreenCaptureKit without a purpose string in its bundle — so a
+      # dropped `Info.plist` merge does not degrade recording, it kills the
+      # process the instant the user presses Record. Nothing about the build
+      # fails when that happens, and the app runs fine right up to the moment
+      # it matters, so the built bundle is asked directly (ADR-0024).
+      - name: Verify the macOS permission strings reached the bundle
+        if: matrix.os == 'macos-latest'
+        run: bash .github/scripts/verify-macos-plist.sh
 
       - name: Upload build
         uses: actions/upload-artifact@v4

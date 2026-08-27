@@ -18,6 +18,6 @@
     <string>Resumeira records your microphone so it can transcribe your side of the meeting. The audio stays on this Mac unless you configure a transcription service yourself.</string>
 
     <key>NSScreenCaptureUsageDescription</key>
-    <string>Resumeira records the audio your Mac plays — the other people in the meeting. macOS provides that only through screen recording; no image of your screen is ever captured, stored or sent.</string>
+    <string>Resumeira records the audio your Mac plays — the other people in the meeting. macOS provides that only through screen recording; Resumeira never receives, stores or sends any image of your screen.</string>
   </dict>
 </plist>

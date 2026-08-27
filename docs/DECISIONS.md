@@ -503,3 +503,23 @@ macOS nor Linux capture has been run against a real machine — CI proves they
 compile and their logic passes, not that a meeting comes out. Until someone
 records on each, the Windows path remains the only one with evidence behind
 it.
+
+## ADR-0025 — A track that recorded nothing is an error, not a clean track
+**Date:** 2026-08-27 · **Status:** accepted
+**Decision:** `RecordingSession::stop` reports an error on any track that
+started, never faulted, and finished with zero samples. Zero means zero —
+silence is still samples, so this cannot fire on a quiet meeting.
+**Why:** Every other error route in the recorder depends on a capture source
+*reporting* a fault (ADR-0017). A source that starts cleanly and then simply
+never delivers a buffer reports nothing, so the track was filed as healthy and
+the app told the user the meeting recorded fine — with one side of it missing.
+This was found by review, not theory: a rejected ScreenCaptureKit output
+handler (whose only signal is a `None` return and an `eprintln!` the app's
+logger does not capture) produces exactly that, and so does a PulseAudio
+monitor that never wakes. The specific bug was fixed; the class needed a floor
+that does not depend on any backend remembering to speak up.
+**Consequences:** One more reason a track can be reported failed, on a path
+where a false positive is cheap (a message about a track nobody spoke into
+through a device that recorded nothing) and a false negative is unrecoverable.
+Backends stay responsible for reporting what they know — this is a backstop,
+not a substitute.

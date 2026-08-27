@@ -299,14 +299,30 @@ pub(crate) fn f32le_to_samples(bytes: &[u8]) -> Vec<f32> {
 /// not happen, but the alternative is reading past a buffer or padding one
 /// channel with silence it never recorded; a few dropped frames at the end
 /// of a buffer are the least wrong of the three.
+///
+/// The multi-buffer form assumes each buffer is exactly one channel, which
+/// is how ScreenCaptureKit delivers planar audio. A list of *multi*-channel
+/// buffers would need a different interleave, and is not produced by
+/// anything this code talks to.
+///
+/// A single buffer is truncated to whole frames as well: `f32le_to_samples`
+/// guarantees whole samples, and a buffer that ends mid-frame would
+/// otherwise carry a half-frame whose remaining channel is silently invented
+/// downstream. `channels == 0` on a non-empty buffer is left to the caller —
+/// it is a malformed buffer, not an empty one, and the two must not be
+/// treated the same.
 #[cfg(any(target_os = "macos", test))]
 pub(crate) fn interleave_audio_buffers(buffers: &[(u32, &[u8])]) -> (Vec<f32>, u16) {
     match buffers {
         [] => (Vec::new(), 0),
-        [(channels, bytes)] => (
-            f32le_to_samples(bytes),
-            u16::try_from(*channels).unwrap_or(u16::MAX),
-        ),
+        [(channels, bytes)] => {
+            let channels = u16::try_from(*channels).unwrap_or(u16::MAX);
+            let mut samples = f32le_to_samples(bytes);
+            if channels > 0 {
+                samples.truncate(samples.len() - samples.len() % channels as usize);
+            }
+            (samples, channels)
+        }
         planes => {
             let decoded: Vec<Vec<f32>> = planes
                 .iter()
@@ -382,6 +398,27 @@ mod raw_byte_tests {
         let (samples, channels) = interleave_audio_buffers(&[(1, &left), (1, &right)]);
         assert_eq!(samples, vec![1.0, 2.0, 3.0, 4.0]);
         assert_eq!(channels, 2);
+    }
+
+    /// A buffer that ends mid-frame must not hand on a lone channel: the
+    /// downstream downmix would pair it with a sample from the next frame.
+    #[test]
+    fn a_single_buffer_is_truncated_to_whole_frames() {
+        let bytes = le_bytes(&[0.1f32, 0.2, 0.3]);
+        let (samples, channels) = interleave_audio_buffers(&[(2, &bytes)]);
+        assert_eq!(samples, vec![0.1, 0.2]);
+        assert_eq!(channels, 2);
+    }
+
+    /// A malformed buffer (bytes but no channel count) keeps its samples, so
+    /// the caller can tell it apart from an empty one and reject it. Silently
+    /// reporting "no audio" here would drop real audio.
+    #[test]
+    fn a_buffer_with_bytes_but_no_channels_keeps_its_samples() {
+        let bytes = le_bytes(&[0.5f32, 0.25]);
+        let (samples, channels) = interleave_audio_buffers(&[(0, &bytes)]);
+        assert_eq!(samples, vec![0.5, 0.25]);
+        assert_eq!(channels, 0);
     }
 
     #[test]

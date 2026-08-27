@@ -90,6 +90,16 @@ jobs:
         shell: bash
         run: bash .github/scripts/verify-embedded-frontend.sh
 
+      # macOS terminates an app that touches the microphone or
+      # ScreenCaptureKit without a purpose string in its bundle — so a
+      # dropped `Info.plist` merge does not degrade recording, it kills the
+      # process the instant the user presses Record. Nothing about the build
+      # fails when that happens, and the app runs fine right up to the moment
+      # it matters, so the built bundle is asked directly (ADR-0024).
+      - name: Verify the macOS permission strings reached the bundle
+        if: matrix.os == 'macos-latest'
+        run: bash .github/scripts/verify-macos-plist.sh
+
       - name: Collect installers
         shell: bash
         run: |
@@ -144,10 +154,16 @@ jobs:
             **Pre-alpha.** Resumeira has not been dogfooded yet — see the
             README for what works and what does not.
 
-            **System audio is Windows-only** (ADR-0003). The macOS and Linux
-            builds record the microphone; the loopback track reports that the
-            platform is unsupported. They exist so the port stays compilable,
-            not because the product works there yet.
+            **System audio now works on all three platforms** (ADR-0024), by a
+            different mechanism each. On **macOS** the app asks for Screen
+            Recording permission — that is the only supported way to capture
+            system audio, and no video is ever requested or read. On **Linux**
+            you need PulseAudio or PipeWire running.
+
+            **Windows is the only one with a real meeting behind it.** The
+            macOS and Linux capture paths are compiled, unit-tested and
+            bundled on every commit, but neither has yet been run against real
+            audio.
 
             These installers are **unsigned**. Windows SmartScreen will say the
             publisher is unknown, and macOS Gatekeeper will refuse to open the

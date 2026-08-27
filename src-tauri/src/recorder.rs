@@ -36,6 +36,22 @@ struct CaptureFault {
     seen_at: Instant,
 }
 
+/// The last resort against a track that started, never failed, and recorded
+/// nothing.
+///
+/// Every error route in this module depends on a capture source *reporting*
+/// a fault. A source that starts cleanly and then simply never delivers a
+/// buffer reports nothing at all, so the track is filed as healthy and the
+/// meeting comes back transcribed from one side — with the app claiming
+/// success. That is the single failure this product cannot have, and it is
+/// not hypothetical: it is what a rejected ScreenCaptureKit output handler,
+/// or a monitor source that never wakes, actually looks like from here.
+///
+/// Zero samples means zero, not quiet: silence is still samples.
+fn silent_track_error(sample_count: u64) -> Option<String> {
+    (sample_count == 0).then(|| "this track started but never delivered any audio".to_string())
+}
+
 /// Per-track outcome reported by [`RecordingSession::stop`].
 ///
 /// `error` carries only the error's `Display` text (a kind, never sample
@@ -414,13 +430,16 @@ impl RecordingSession {
 
                     let write_error = active.fatal_error();
 
+                    let sample_count = active.sample_count.load(Ordering::Relaxed);
+
                     let error = write_error
                         .or_else(|| stop_error.map(|e| e.to_string()))
-                        .or_else(|| finish_error.map(|e| e.to_string()));
+                        .or_else(|| finish_error.map(|e| e.to_string()))
+                        .or_else(|| silent_track_error(sample_count));
 
                     track_reports.push(TrackReport {
                         track: active.track,
-                        sample_count: active.sample_count.load(Ordering::Relaxed),
+                        sample_count,
                         error,
                     });
                 }
@@ -792,6 +811,74 @@ mod tests {
         assert!(mic_report.error.is_some());
         assert_eq!(system_report.sample_count, 10);
         assert_eq!(system_report.error, None);
+    }
+
+    /// The failure that has no error attached anywhere: a source that starts
+    /// cleanly, never faults, and never delivers a buffer. Before this was
+    /// checked, such a track came back `error: None` and the app told the
+    /// user the meeting had recorded fine.
+    #[test]
+    fn a_track_that_started_and_delivered_nothing_is_reported_as_an_error() {
+        let dir = tempdir().unwrap();
+        let (mic_source, mic_sink, _) = FakeSource::new("mic");
+        let (system_source, _system_sink, _) = FakeSource::new("system");
+        let (mic_writer, _, _) = FakeWriter::new();
+        let (system_writer, _, _) = FakeWriter::new();
+        let convert_calls = Arc::new(AtomicUsize::new(0));
+
+        let mut session = RecordingSession::start_at(
+            dir.path(),
+            vec![
+                (Track::Mic, Box::new(mic_source), Box::new(mic_writer)),
+                (
+                    Track::System,
+                    Box::new(system_source),
+                    Box::new(system_writer),
+                ),
+            ],
+            counting_converter(convert_calls),
+            fixed_now(),
+        )
+        .unwrap();
+
+        // The microphone records; the system track is started and silent —
+        // exactly what a rejected ScreenCaptureKit handler looks like here.
+        push_chunk(&mic_sink, vec![1.0; 4]);
+        let report = session.stop();
+
+        let mic = report
+            .tracks
+            .iter()
+            .find(|t| t.track == Track::Mic)
+            .unwrap();
+        assert!(mic.sample_count > 0);
+        assert_eq!(mic.error, None, "a track that recorded must stay clean");
+
+        let system = report
+            .tracks
+            .iter()
+            .find(|t| t.track == Track::System)
+            .unwrap();
+        assert_eq!(system.sample_count, 0);
+        assert!(
+            system
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("never delivered any audio")),
+            "a silent track must not be reported as healthy, got {:?}",
+            system.error
+        );
+    }
+
+    /// A reported fault outranks the silence check: it says *why*, which the
+    /// generic message cannot.
+    #[test]
+    fn a_real_failure_is_preferred_over_the_silence_message() {
+        assert_eq!(
+            silent_track_error(0).as_deref(),
+            Some("this track started but never delivered any audio")
+        );
+        assert_eq!(silent_track_error(1), None);
     }
 
     #[test]

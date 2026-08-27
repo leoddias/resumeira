@@ -35,7 +35,14 @@ use crate::audio::{AudioChunk, AudioError, CaptureSource, ChunkSink, ErrorSink};
 
 /// What SCK is asked to deliver. Matching the Windows backend's shape keeps
 /// the chunks going through the same tested resampler.
-const CAPTURE_RATE: i32 = 48_000;
+///
+/// Typed as the framework's own enum rather than a bare `i32` on purpose:
+/// ScreenCaptureKit accepts 8, 16, 24 and 48 kHz and **silently substitutes
+/// 48 kHz for anything else**, with no way to read back what it settled on.
+/// A plain integer here would let someone write `44_100`, get 48 kHz audio
+/// stamped 44100, and ship a system track that is permanently ~9% slow —
+/// with nothing failing anywhere. The enum makes that unwriteable.
+const CAPTURE_RATE: AudioSampleRate = AudioSampleRate::Rate48000;
 const CAPTURE_CHANNELS: i32 = 2;
 
 /// The video side, made as cheap as the API allows. No `Screen` handler is
@@ -43,6 +50,9 @@ const CAPTURE_CHANNELS: i32 = 2;
 /// stop the framework from allocating full-resolution surfaces for a stream
 /// nobody reads.
 const IDLE_VIDEO_EDGE: u32 = 2;
+
+/// One notional frame per hour, for the same reason.
+const IDLE_FRAME_SECONDS: i64 = 3_600;
 
 /// What the UI shows for this track. Not a device name, because there is no
 /// device: SCK hands over the system mix.
@@ -85,8 +95,12 @@ impl CaptureSource for SystemCapture {
         // is the one that has to name the setting rather than an error code.
         let content = SCShareableContent::get().map_err(start_error)?;
         let displays = content.displays();
+        // Two very different causes land here: a genuinely headless Mac, and
+        // a Mac whose Screen Recording permission was revoked after this
+        // process started — `get()` then succeeds and simply reports there is
+        // nothing to capture. The message names both rather than guessing.
         let display = displays.first().ok_or(AudioError::NoDevice(
-            "a display (ScreenCaptureKit needs one even to capture only audio)",
+            "a display to capture from (ScreenCaptureKit needs one even for audio alone;              on a Mac that has a screen, Screen Recording permission has been revoked)",
         ))?;
 
         let filter = SCContentFilter::create()
@@ -102,11 +116,15 @@ impl CaptureSource for SystemCapture {
             // recorded as if it were the meeting.
             .with_excludes_current_process_audio(true)
             .with_width(IDLE_VIDEO_EDGE)
-            .with_height(IDLE_VIDEO_EDGE);
+            .with_height(IDLE_VIDEO_EDGE)
+            // Belt and braces on top of registering no screen handler: even
+            // if a frame were somehow asked for, one an hour is the rate.
+            .with_minimum_frame_interval(&CMTime::new(IDLE_FRAME_SECONDS, 1));
 
-        // Read back rather than assumed: if the framework declines the
-        // requested rate, every chunk would be tagged with a rate it does
-        // not have and the recording would come out pitch-shifted.
+        // Note this is the rate that was *set*, not one the framework
+        // confirmed — `SCStreamConfiguration::sample_rate` is a plain
+        // property getter and SCK reports no negotiated value. The guard
+        // against a wrong rate is the type of `CAPTURE_RATE`, not this call.
         let sample_rate = effective_sample_rate(config.sample_rate());
 
         // SCK hands its callbacks out to a dispatch queue and takes them as
@@ -126,7 +144,14 @@ impl CaptureSource for SystemCapture {
             stream_delegate(Arc::clone(&on_error), Arc::clone(&running)),
         );
 
-        stream.add_output_handler(
+        // The registration result is the difference between recording a
+        // meeting and recording nothing. ScreenCaptureKit can refuse
+        // `addStreamOutput`, and the crate reports that only by returning
+        // `None` and printing to stderr — which the app's logger does not
+        // capture. Ignoring it would leave `start_capture` succeeding, the
+        // recorder filing the track as live, and a 45-minute call
+        // transcribed with only the user's own voice, reported as a success.
+        let registered = stream.add_output_handler(
             move |sample: CMSampleBuffer, of_type: SCStreamOutputType| {
                 if of_type != SCStreamOutputType::Audio {
                     return;
@@ -149,6 +174,12 @@ impl CaptureSource for SystemCapture {
             },
             SCStreamOutputType::Audio,
         );
+        if registered.is_none() {
+            return Err(AudioError::Stream(
+                "system audio (ScreenCaptureKit): the stream refused an audio output handler"
+                    .to_string(),
+            ));
+        }
 
         // No `Screen` handler is registered: frames are only decoded and
         // copied for output types someone asked for, and this stream wants
@@ -189,30 +220,18 @@ impl CaptureSource for SystemCapture {
 
 /// Builds the delegate that carries a mid-stream death back to the session.
 ///
-/// `running` is what keeps a normal `stop` from looking like a fault: SCK
-/// calls `on_stop` for a deliberate shutdown too, and reporting that as a
-/// dead device would put a failure on a meeting that ended perfectly well.
+/// `running` keeps a shutdown already under way from looking like a fault:
+/// the callback runs on a dispatch queue, so it can land just after `stop`
+/// has been called, and putting a device failure on a meeting that ended
+/// perfectly well would be a lie the user has no way to check.
 fn stream_delegate(on_error: Arc<Mutex<ErrorSink>>, running: Arc<AtomicBool>) -> StreamCallbacks {
-    let stop_error = Arc::clone(&on_error);
-    let stop_running = Arc::clone(&running);
-
-    StreamCallbacks::new()
-        .on_error(move |err: SCError| {
-            report(&on_error, &running, mid_stream_error(&err));
-        })
-        // The stop callback carries a message rather than an `SCError`, so
-        // this one formats its own.
-        .on_stop(move |message: Option<String>| {
-            // A stop that nobody asked for is still a stream that is no
-            // longer delivering audio, so it is reported even when it comes
-            // with no message: silently recording nothing is the one failure
-            // this product cannot have.
-            report(
-                &stop_error,
-                &stop_running,
-                stopped_error(message.as_deref()),
-            );
-        })
+    // Only `on_error` is registered. ScreenCaptureKit reports *error* stops
+    // and nothing else to a delegate — a `stop_capture` we asked for is never
+    // delivered — so `on_stop` would fire only alongside this one, and
+    // registering both would report a single death twice.
+    StreamCallbacks::new().on_error(move |err: SCError| {
+        report(&on_error, &running, mid_stream_error(&err));
+    })
 }
 
 /// Hands `error` to the session, unless capture is already shutting down.
@@ -233,14 +252,6 @@ fn report(on_error: &Arc<Mutex<ErrorSink>>, running: &AtomicBool, error: AudioEr
 /// grant something would be advice that does not apply.
 fn mid_stream_error(err: &SCError) -> AudioError {
     AudioError::Stream(format!("system audio (ScreenCaptureKit): {err}"))
-}
-
-/// Describes a stream that stopped on its own, with or without a reason.
-fn stopped_error(message: Option<&str>) -> AudioError {
-    AudioError::Stream(match message {
-        Some(message) => format!("system audio (ScreenCaptureKit): the stream stopped: {message}"),
-        None => "system audio (ScreenCaptureKit): the stream stopped".to_string(),
-    })
 }
 
 /// Turns one ScreenCaptureKit audio sample buffer into a chunk.
@@ -270,8 +281,17 @@ fn chunk_from_sample(
         .collect();
 
     let (samples, channels) = interleave_audio_buffers(&planes);
-    if samples.is_empty() || channels == 0 {
+    if samples.is_empty() {
         return Ok(None);
+    }
+    // Samples with no channel count is a malformed buffer, not an empty one.
+    // Reporting it as "no audio" would drop real audio on the floor without
+    // anyone finding out.
+    if channels == 0 {
+        return Err(AudioError::Stream(
+            "system audio (ScreenCaptureKit): a buffer carried samples but no channel count"
+                .to_string(),
+        ));
     }
 
     Ok(Some(AudioChunk {
@@ -281,17 +301,17 @@ fn chunk_from_sample(
     }))
 }
 
-/// The rate to stamp on every chunk, given what the configuration reports.
+/// The rate to stamp on every chunk, given what the configuration holds.
 ///
-/// A non-positive rate is the framework telling us it did not take the one
-/// that was requested. Falling back to the requested value is wrong in that
-/// case but bounded — a `sample_rate` of zero would make every downstream
-/// duration a division by zero instead.
+/// This cannot detect a rate the framework refused — SCK does not report one
+/// (see [`CAPTURE_RATE`]). All it does is refuse to stamp a nonsensical
+/// value: a zero would turn every downstream duration into a division by
+/// zero, and a negative one cannot be a rate at all.
 fn effective_sample_rate(configured: i32) -> u32 {
     u32::try_from(configured)
         .ok()
         .filter(|rate| *rate > 0)
-        .unwrap_or(CAPTURE_RATE as u32)
+        .unwrap_or_else(|| CAPTURE_RATE.as_hz() as u32)
 }
 
 /// Maps a ScreenCaptureKit failure at start.
@@ -382,20 +402,16 @@ mod tests {
         assert!(!msg.contains("System Settings"));
     }
 
-    /// A stream that stops on its own is a track that is no longer
-    /// recording, whether or not the framework says why. Both shapes have to
-    /// reach the session.
+    /// A stream that dies mid-meeting has to reach the session, and must not
+    /// be dressed up as a permission problem the user could act on.
     #[test]
-    fn a_stream_that_stops_is_reported_with_or_without_a_reason() {
-        let AudioError::Stream(with_reason) = stopped_error(Some("display disconnected")) else {
+    fn a_mid_stream_death_is_a_stream_error_not_a_permission_prompt() {
+        let AudioError::Stream(msg) =
+            mid_stream_error(&SCError::StreamError("the display went away".to_string()))
+        else {
             panic!("expected AudioError::Stream");
         };
-        assert!(with_reason.contains("display disconnected"));
-
-        let AudioError::Stream(bare) = stopped_error(None) else {
-            panic!("expected AudioError::Stream");
-        };
-        assert!(bare.contains("stopped"));
+        assert!(msg.contains("the display went away"));
     }
 
     #[test]
