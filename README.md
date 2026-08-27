@@ -8,23 +8,22 @@ It is designed for in-person, hybrid, and fully remote meetings — no bot
 joins your call, and nothing leaves your machine except through a path you
 explicitly configured.
 
-> **Status: pre-release, Windows only, and never yet used for a real
-> meeting.** The whole path is wired: stopping a recording saves two Opus
-> tracks, then transcription, summarization, note writing and indexing run in
-> the background. Every part is covered by unit tests, and microphone and
-> loopback capture are verified against real hardware — but nobody has sat
-> through an actual meeting with it and read the note that came out. Until
-> that happens, treat any claim about note *quality* as untested. The
-> builds are unsigned, the macOS and Linux builds record the microphone only
-> (system audio is Windows-only), and live/streaming transcription does not
-> exist — see [What is not built yet](#what-is-not-built-yet).
+> **Status: pre-release and never yet used for a real meeting.** The whole
+> path is wired: stopping a recording saves two Opus tracks, then
+> transcription, summarization, note writing and indexing run in the
+> background. Every part is covered by unit tests, and on Windows microphone
+> and loopback capture are verified against real hardware — but nobody has
+> sat through an actual meeting with it and read the note that came out.
+> Until that happens, treat any claim about note *quality* as untested. The
+> builds are unsigned, the macOS and Linux capture backends have never been
+> run against real audio, and live/streaming transcription does not exist —
+> see [What is not built yet](#what-is-not-built-yet).
 
 ## Why it exists
 
 Tools in this category are macOS-only and route your meetings through someone
-else's servers. Resumeira runs on Windows (macOS and Linux are on the
-roadmap), keeps your notes as plain Markdown files you own, and can
-transcribe entirely offline.
+else's servers. Resumeira runs on Windows, macOS and Linux, keeps your notes
+as plain Markdown files you own, and can transcribe entirely offline.
 
 - **No account.** Nothing to sign up for.
 - **No telemetry.** Off by default. An explicit opt-in for anonymous crash
@@ -48,8 +47,9 @@ transcribe entirely offline.
 Building Resumeira from source requires a full native toolchain — the audio
 stack compiles libopus and whisper.cpp from C/C++.
 
-- Windows 10/11 to *use* it; macOS and Linux build and run, but capture the
-  microphone only (ADR-0003, ADR-0023)
+- Windows 10/11, macOS 13+ (Apple Silicon), or Linux with PulseAudio or
+  PipeWire (ADR-0024). macOS additionally needs Xcode installed to *build*:
+  the ScreenCaptureKit bindings compile a Swift bridge.
 - [Node.js](https://nodejs.org/) 22+
 - [Rust](https://rustup.rs/) stable
 - **CMake** and the **MSVC C++ build tools** (Visual Studio Build Tools with
@@ -76,10 +76,23 @@ platforms (ADR-0023):
 | macOS (Apple Silicon) | `.dmg` |
 | Linux (x86-64) | `.AppImage`, `.deb` |
 
-**Only the Windows build is a supported product.** System-audio capture is
-Windows-only (ADR-0003); the macOS and Linux builds record the microphone and
-report the second track as unsupported. They exist so the port stays
-compilable and honest, not because the product works there yet.
+All three capture system audio, by a different mechanism each (ADR-0024):
+WASAPI loopback on Windows, ScreenCaptureKit on macOS, the default output's
+PulseAudio monitor source on Linux. What that costs you per platform:
+
+- **macOS 13+**, Apple Silicon. The app asks for **Screen Recording**
+  permission, because ScreenCaptureKit is the only supported way to capture
+  system audio; no video is ever requested or read. Grant it under *System
+  Settings > Privacy & Security > Screen & System Audio Recording*. A
+  headless Mac cannot record system audio at all — ScreenCaptureKit needs a
+  display attached.
+- **Linux** needs PulseAudio or PipeWire running. Bare ALSA has no monitor
+  source, and the system track will report no device.
+
+**Windows is still the only one with a real meeting behind it.** The other
+two are compiled, unit-tested and bundled on every commit, and both have
+`#[ignore]`d hardware tests you can run locally — but nobody has yet recorded
+a meeting on either, so treat them as untested in the way that matters.
 
 Every build is **unsigned** (ADR-0014) — no code-signing certificate has
 been purchased for this validation phase. Windows SmartScreen will show
@@ -116,13 +129,19 @@ npm run tauri build
 
 ## Permissions you will need to grant
 
-- **Microphone access** — Windows asks the first time a recording starts
+- **Microphone access.** Windows asks the first time a recording starts
   (Settings → Privacy & security → Microphone must allow desktop apps).
-- **System audio** is captured with WASAPI loopback (opening the default
-  *output* device as an input), which needs no extra permission on Windows.
-  macOS will require screen-recording permission when that platform lands;
-  loopback capture has no equivalent implemented for macOS/Linux today, which
-  is part of why those platforms are not supported yet.
+  macOS prompts on first use.
+- **System audio.** Nothing extra is needed on Windows (WASAPI loopback opens
+  the default *output* device as an input) or on Linux (the sound server's
+  monitor source is not privileged). **macOS is the exception:** it needs
+  **Screen Recording**, granted under *System Settings > Privacy & Security >
+  Screen & System Audio Recording*, because ScreenCaptureKit is the only
+  supported way to capture system audio there (ADR-0024). The app registers no
+  video handler and never reads a frame — the permission is named after
+  screens, but only audio is taken. Until it is granted, the system track
+  fails to start and says exactly where to fix it; the microphone track is
+  unaffected.
 
 ## Where your data lives
 
@@ -135,7 +154,7 @@ Windows both the config and data directories resolve under `%APPDATA%`.
 | Settings | `%APPDATA%\dev.resumeira.app\config.json` — plain JSON, no secrets, safe to open or attach to a bug report |
 | Search index | `%APPDATA%\dev.resumeira.app\index.sqlite` (rebuildable from the notes on disk — delete it safely) |
 | Whisper models | `%APPDATA%\dev.resumeira.app\models\` — downloaded on request, verified by SHA-256 before use |
-| API keys | Windows Credential Manager, service name `resumeira` (never written to a file, never returned to the app's UI, never logged) |
+| API keys | The OS credential store, service name `resumeira` — Credential Manager on Windows, Keychain on macOS, Secret Service on Linux (never written to a file, never returned to the app's UI, never logged) |
 
 Backup = copy the notes folder. There is nothing else to export.
 
@@ -175,9 +194,12 @@ implemented yet; this section will be updated when it ships.)
 ## What is not built yet
 
 - **Nobody has used this for a real meeting yet.** Every part is unit-tested
-  and capture is verified against real hardware, but the end-to-end question
-  — is the note actually worth reading? — is unproven.
-- macOS and Linux support (Windows only today)
+  and Windows capture is verified against real hardware, but the end-to-end
+  question — is the note actually worth reading? — is unproven.
+- **The macOS and Linux capture backends have never met real audio.** They
+  compile, their logic is unit-tested, and they are bundled on every commit,
+  but no meeting has been recorded on either. Run the `#[ignore]`d hardware
+  tests before trusting one with something you cannot repeat.
 - Live/streaming transcription — transcription and summarization run after
   you stop recording, not during the meeting
 - Local (offline) summarization — summarization always calls a cloud LLM

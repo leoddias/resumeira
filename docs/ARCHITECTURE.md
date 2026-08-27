@@ -24,7 +24,7 @@
 │   ├─ secrets   OS keychain (keys never leave Rust)  │
 │   └─ tray      start/stop, status glyph             │
 ├────────────────────────────────────────────────────┤
-│ OS audio (WASAPI now; CoreAudio/PipeWire later)     │
+│ OS audio (WASAPI / ScreenCaptureKit / PulseAudio)   │
 │ Network: user-configured providers · model download │
 │          · updater. Nothing else.                   │
 └────────────────────────────────────────────────────┘
@@ -61,8 +61,14 @@ src-tauri/
   src/
     lib.rs                # command registration (orchestrator-owned)
     audio/
-      capture_mic.rs      # cpal input stream
-      capture_system.rs   # WASAPI loopback (win), stubs elsewhere
+      capture/
+        mic.rs            # cpal input stream
+        sample.rs         # buffer -> f32 conversions (+ tests)
+        system/           # one loopback backend per OS (ADR-0024)
+          windows.rs      #   WASAPI loopback, through cpal
+          macos.rs        #   ScreenCaptureKit audio (13.0+), TCC-gated
+          linux.rs        #   @DEFAULT_MONITOR@ via libpulse-simple
+          unsupported.rs  #   fails loudly on any other target
       resample.rs         # → 16 kHz mono (+ tests)
       encoder.rs          # Opus writer (+ tests)
       mixer.rs            # 2 tracks → 1 buffer for transcription (+ tests)

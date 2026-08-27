@@ -280,8 +280,7 @@
               href="https://github.com/leoddias/resumeira/releases/download/v0.1.0-alpha/Resumeira_0.1.0_x64_en-US.msi"
               >MSI</a
             >
-            <br />64-bit, installs to Program Files. The only platform where system-audio capture
-            works.
+            <br />64-bit, installs to Program Files. The most tested of the three.
           </p>
         </div>
         <div class="card">
@@ -302,7 +301,7 @@
               href="https://github.com/leoddias/resumeira/releases/download/v0.1.0-alpha/Resumeira_0.1.0_aarch64.dmg"
               >Disk image (.dmg)</a
             >
-            <br />Apple Silicon. Microphone only — see the note below.
+            <br />Apple Silicon, macOS 13 or later. Asks for Screen Recording — see below.
           </p>
         </div>
         <div class="card">
@@ -317,17 +316,24 @@
               href="https://github.com/leoddias/resumeira/releases/download/v0.1.0-alpha/Resumeira_0.1.0_amd64.deb"
               >Debian package (.deb)</a
             >
-            <br />x86-64. Microphone only — see the note below.
+            <br />x86-64. Needs PulseAudio or PipeWire — see below.
           </p>
         </div>
       </div>
 
       <p class="callout">
-        <strong>System audio is Windows-only today.</strong> Capturing what the machine plays is
-        per-OS work: Windows gets it from WASAPI loopback, macOS needs ScreenCaptureKit and a
-        permission dance, Linux needs PipeWire. The macOS and Linux builds record your microphone
-        and report the second track as unsupported — they exist so the port stays honest and
-        compilable, not because the product works there yet.
+        All three builds capture system audio, by a different route each:
+        <strong>Windows</strong> through WASAPI loopback, <strong>macOS</strong> through
+        ScreenCaptureKit, <strong>Linux</strong> through the default output's PulseAudio monitor
+        (PipeWire serves this too). Two things follow. On macOS the app asks for
+        <strong>Screen Recording</strong>
+        permission, because that is the only supported way to record system audio — no image of your
+        screen is ever captured, and the app registers no video handler at all. On Linux you need
+        PulseAudio or PipeWire; a machine running bare ALSA has no monitor to record.
+        <strong
+          >Windows is still the only one of the three with a recorded meeting behind it</strong
+        >
+        — the other two are built and tested on every commit, not yet used in anger.
       </p>
 
       <p class="callout">

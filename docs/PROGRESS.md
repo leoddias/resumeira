@@ -7,9 +7,11 @@ Phase: **M5 — polish before the dogfood gate**. M0–M4 have landed.
 Verified by tests (407 Rust tests + 3 hardware-only ignored, 146 frontend
 tests; clippy and fmt clean):
 
-- Recording: mic + system loopback via cpal/WASAPI at the device's native
-  format, resampled to 16 kHz mono, two Opus tracks written incrementally,
-  per-track failure isolation with a grace window for transient glitches.
+- Recording: mic (cpal) + system loopback on all three platforms — WASAPI
+  loopback on Windows, ScreenCaptureKit on macOS, the default sink's
+  PulseAudio monitor on Linux (ADR-0024) — at the device's native format,
+  resampled to 16 kHz mono, two Opus tracks written incrementally, per-track
+  failure isolation with a grace window for transient glitches.
 - Transcription: cloud (Groq/OpenAI Whisper) and local (whisper-rs) behind an
   explicit route with no implicit fallback; model catalogue with staged,
   checksum-verified downloads.
@@ -37,8 +39,12 @@ tests; clippy and fmt clean):
   both engines collapse gap-separated hallucination runs ("Thank you." over
   silence).
 
-**Verified against real hardware:** microphone and loopback capture, via the
-two `#[ignore]`d tests (`cargo test --manifest-path src-tauri/Cargo.toml -- --ignored`).
+**Verified against real hardware:** microphone and loopback capture **on
+Windows only**, via the `#[ignore]`d tests
+(`cargo test --manifest-path src-tauri/Cargo.toml -- --ignored`). The macOS
+and Linux capture backends have equivalent ignored tests that nobody has run:
+they compile and their logic passes on the CI runners, and that is all that is
+known about them.
 
 **Not verified at all: the product.** The app has never recorded a real
 meeting end to end. No note produced by the full pipeline has ever been read
@@ -65,13 +71,48 @@ by a person. Every quality claim about the summary is currently unfounded.
   becomes a repository secret, which only a human can create and store.
 - The draft release `v0.1.0-alpha` is sitting unpublished on GitHub. The
   landing page's download links point at its assets, so they 404 until
-  someone publishes it.
+  someone publishes it. It also predates the macOS/Linux capture backends —
+  cut a new tag rather than publishing that one.
+- **macOS and Linux system audio is unverified against hardware.** Highest
+  risk on macOS: the TCC permission flow and whether ScreenCaptureKit
+  actually delivers audio with no video handler registered. On Linux: whether
+  `stop` ever hits its 750 ms fallback on a real sound server.
 - Device names come from cpal at factory time, so a `TrackStatus` shows the
   default device even if capture later opened a different one.
 
 ## Session log
 
-### 2026-08-27 (latest) — the pipeline, and what building the other two platforms found
+### 2026-08-27 (latest) — system audio on macOS and Linux
+- `SystemCapture` is no longer a stub off Windows (ADR-0024, superseding the
+  platform half of ADR-0003). `capture/system/` is now one backend per OS:
+  Windows keeps WASAPI loopback through cpal; **macOS** uses ScreenCaptureKit
+  audio (13.0+); **Linux** records `@DEFAULT_MONITOR@` through
+  `libpulse-simple`, which covers PipeWire too via `pipewire-pulse`. A fourth
+  `unsupported` backend keeps `UnsupportedPlatform` meaningful.
+- `AudioError::PermissionDenied { what, grant }` is new, and exists for one
+  reason: macOS gates system audio behind **Screen Recording**, a permission
+  named after something this app never does. The error carries the exact
+  Settings path, and `src-tauri/Info.plist` carries the usage strings macOS
+  terminates the process for omitting — both verified present in the built
+  `.app` by downloading the CI artefact, not by reading the source.
+- The Linux backend is the first capture path that blocks rather than being a
+  realtime callback. `stop` therefore waits on the worker's own
+  acknowledgement with a 750 ms deadline instead of an unbounded `join`, and
+  the worker re-checks the stop flag *after* each read, so no chunk reaches a
+  recorder that is already closing its files.
+- The pure conversions (`f32le_to_samples`, `interleave_audio_buffers` —
+  ScreenCaptureKit delivers planar audio) live in `capture/sample.rs` under
+  `cfg(any(target_os = ..., test))`, so they are exercised on Windows too
+  instead of only on a CI runner.
+- Toolchain consequences found the hard way, all in CI: macOS needs
+  `minimumSystemVersion` 13.0; and the Swift-bridge rpath the
+  `screencapturekit` build script emits does **not** propagate to the binary
+  that links it, so `/usr/lib/swift` had to be added to `.cargo/config.toml`
+  or every artefact died at load time on `libswift_Concurrency.dylib`.
+- Tests: 421 Rust + 146 frontend green on all three runners; clippy and fmt
+  clean. **No hardware verification on macOS or Linux** — see Blockers.
+
+### 2026-08-27 — the pipeline, and what building the other two platforms found
 - CI, release and Pages workflows now exist and are **green** (ADR-0023):
   `frontend` plus a three-runner `desktop` matrix that tests and bundles on
   Windows, macOS and Linux. Run
