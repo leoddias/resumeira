@@ -26,6 +26,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use screencapturekit::error::SCStreamErrorCode;
 use screencapturekit::prelude::*;
 use screencapturekit::stream::delegate_trait::StreamCallbacks;
 
@@ -199,16 +200,18 @@ fn stream_delegate(on_error: Arc<Mutex<ErrorSink>>, running: Arc<AtomicBool>) ->
         .on_error(move |err: SCError| {
             report(&on_error, &running, mid_stream_error(&err));
         })
-        .on_stop(move |err: Option<SCError>| {
-            // A stop with no error attached and no stop requested is still a
-            // stream that is no longer delivering audio, so it is reported:
-            // silently recording nothing is the failure this product cannot
-            // have.
-            let mapped = err.as_ref().map_or_else(
-                || AudioError::Stream("system audio (ScreenCaptureKit): the stream stopped".into()),
-                mid_stream_error,
+        // The stop callback carries a message rather than an `SCError`, so
+        // this one formats its own.
+        .on_stop(move |message: Option<String>| {
+            // A stop that nobody asked for is still a stream that is no
+            // longer delivering audio, so it is reported even when it comes
+            // with no message: silently recording nothing is the one failure
+            // this product cannot have.
+            report(
+                &stop_error,
+                &stop_running,
+                stopped_error(message.as_deref()),
             );
-            report(&stop_error, &stop_running, mapped);
         })
 }
 
@@ -230,6 +233,14 @@ fn report(on_error: &Arc<Mutex<ErrorSink>>, running: &AtomicBool, error: AudioEr
 /// grant something would be advice that does not apply.
 fn mid_stream_error(err: &SCError) -> AudioError {
     AudioError::Stream(format!("system audio (ScreenCaptureKit): {err}"))
+}
+
+/// Describes a stream that stopped on its own, with or without a reason.
+fn stopped_error(message: Option<&str>) -> AudioError {
+    AudioError::Stream(match message {
+        Some(message) => format!("system audio (ScreenCaptureKit): the stream stopped: {message}"),
+        None => "system audio (ScreenCaptureKit): the stream stopped".to_string(),
+    })
 }
 
 /// Turns one ScreenCaptureKit audio sample buffer into a chunk.
@@ -369,6 +380,22 @@ mod tests {
         };
         assert!(msg.contains("ScreenCaptureKit"));
         assert!(!msg.contains("System Settings"));
+    }
+
+    /// A stream that stops on its own is a track that is no longer
+    /// recording, whether or not the framework says why. Both shapes have to
+    /// reach the session.
+    #[test]
+    fn a_stream_that_stops_is_reported_with_or_without_a_reason() {
+        let AudioError::Stream(with_reason) = stopped_error(Some("display disconnected")) else {
+            panic!("expected AudioError::Stream");
+        };
+        assert!(with_reason.contains("display disconnected"));
+
+        let AudioError::Stream(bare) = stopped_error(None) else {
+            panic!("expected AudioError::Stream");
+        };
+        assert!(bare.contains("stopped"));
     }
 
     #[test]
