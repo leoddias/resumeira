@@ -9,6 +9,7 @@
 //! (capture or write) never stops the other track, and nothing here panics
 //! on a path reachable while a recording is in progress.
 
+use crate::audio::level::LevelMeter;
 use crate::audio::{
     AudioChunk, AudioError, CaptureSource, ChunkConverter, ChunkSink, ErrorSink, Track, TrackWriter,
 };
@@ -46,6 +47,22 @@ pub struct TrackReport {
     pub error: Option<String>,
 }
 
+/// How loud one track is right now, for the UI's activity meter.
+///
+/// Read far more often than [`TrackLiveness`] — a meter that only moves
+/// every couple of seconds is not a meter — so it is its own small type
+/// rather than another field on the session's state.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TrackLevel {
+    pub track: Track,
+    /// Bar height in `0.0..=1.0`. See [`LevelMeter::level`].
+    pub level: f32,
+    /// Whether this track has delivered any audio at all yet. A track that
+    /// never starts reads `0.0` exactly like a silent one, and the two mean
+    /// very different things to someone checking their microphone.
+    pub receiving: bool,
+}
+
 /// Per-track status of a session that is still running.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TrackLiveness {
@@ -77,6 +94,8 @@ struct ActiveTrack {
     /// Set by a capture failure. Fatal only once it outlives the grace
     /// window without any chunk arriving to clear it.
     capture_fault: Arc<Mutex<Option<CaptureFault>>>,
+    /// Most recent loudness, for the UI's activity meter.
+    level: Arc<LevelMeter>,
 }
 
 impl ActiveTrack {
@@ -179,7 +198,9 @@ impl RecordingSession {
             let sample_count = Arc::new(AtomicU64::new(0));
             let error_slot: Arc<Mutex<Option<AudioError>>> = Arc::new(Mutex::new(None));
             let capture_fault: Arc<Mutex<Option<CaptureFault>>> = Arc::new(Mutex::new(None));
+            let level = Arc::new(LevelMeter::new());
 
+            let sink_level = level.clone();
             let sink_writer = writer_slot.clone();
             let sink_fault = capture_fault.clone();
             let sink_samples = sample_count.clone();
@@ -197,6 +218,14 @@ impl RecordingSession {
                 }
 
                 let mono = sink_converter(&chunk);
+
+                // Metered before the write, and from the converted samples:
+                // the meter is about the *device*, so it must keep moving
+                // while a writer is briefly contended, and it must show what
+                // is actually being recorded rather than the raw device
+                // stream. A failed track returns above, so its meter stops
+                // being fed and decays to empty on its own.
+                sink_level.record(&mono);
 
                 let mut writer_guard = match sink_writer.lock() {
                     Ok(guard) => guard,
@@ -263,6 +292,7 @@ impl RecordingSession {
                     sample_count,
                     error: error_slot,
                     capture_fault,
+                    level,
                 })),
                 Err(error) => slots.push(TrackSlot::FailedToStart { track, error }),
             }
@@ -297,6 +327,17 @@ impl RecordingSession {
         }
     }
 
+    /// Test-only: pretend `by` more time has passed for every meter, so
+    /// staleness can be exercised without sleeping.
+    #[cfg(test)]
+    fn age_meters(&self, by: Duration) {
+        for slot in &self.tracks {
+            if let TrackSlot::Active(active) = slot {
+                active.level.advance(by);
+            }
+        }
+    }
+
     /// Per-track status *while the session is still running*.
     ///
     /// Exists so the UI can stop showing a track as live the moment its
@@ -317,6 +358,35 @@ impl RecordingSession {
                     track: *track,
                     live: false,
                     error: Some(error.to_string()),
+                },
+            })
+            .collect()
+    }
+
+    /// How loud each track is right now.
+    ///
+    /// A track that failed, or never started, reports an empty meter rather
+    /// than being left out: the UI draws one row per track either way, and a
+    /// missing row would read as "this track is fine".
+    pub fn track_levels(&self) -> Vec<TrackLevel> {
+        self.tracks
+            .iter()
+            .map(|slot| match slot {
+                // Answered from the meter alone, never from `fatal_error()`:
+                // this is polled ten times a second, and `fatal_error()`
+                // takes the same lock the audio thread holds for the whole
+                // of every encode-and-write. A device that stopped
+                // delivering shows up here either way — that is what a
+                // stale meter *is*.
+                TrackSlot::Active(active) => TrackLevel {
+                    track: active.track,
+                    level: active.level.level(),
+                    receiving: active.level.receiving(),
+                },
+                TrackSlot::FailedToStart { track, .. } => TrackLevel {
+                    track: *track,
+                    level: 0.0,
+                    receiving: false,
                 },
             })
             .collect()
@@ -1015,5 +1085,124 @@ mod tests {
             "the writer is finalized so the captured audio stays playable"
         );
         assert!(session.stop().tracks[0].error.is_some());
+    }
+
+    // --- track_levels(): the UI's activity meter ---
+
+    #[test]
+    fn a_track_meters_the_audio_it_receives() {
+        let dir = tempdir().expect("temp dir");
+        let (source, sink, _) = FakeSource::new("mic");
+        let (writer, _, _) = FakeWriter::new();
+
+        let session = RecordingSession::start(
+            dir.path(),
+            vec![(Track::Mic, Box::new(source), Box::new(writer))],
+            counting_converter(Arc::new(AtomicUsize::new(0))),
+        )
+        .expect("session starts");
+
+        push_chunk(&sink, vec![0.5; 64]);
+
+        let levels = session.track_levels();
+        assert_eq!(levels.len(), 1);
+        assert_eq!(levels[0].track, Track::Mic);
+        assert!(levels[0].receiving);
+        assert!(
+            levels[0].level > 0.0,
+            "audible audio must move the meter: {}",
+            levels[0].level
+        );
+    }
+
+    #[test]
+    fn a_track_that_has_delivered_nothing_yet_is_not_receiving() {
+        let dir = tempdir().expect("temp dir");
+        let (source, _sink, _) = FakeSource::new("mic");
+        let (writer, _, _) = FakeWriter::new();
+
+        let session = RecordingSession::start(
+            dir.path(),
+            vec![(Track::Mic, Box::new(source), Box::new(writer))],
+            counting_converter(Arc::new(AtomicUsize::new(0))),
+        )
+        .expect("session starts");
+
+        let levels = session.track_levels();
+        assert!(!levels[0].receiving);
+        assert_eq!(levels[0].level, 0.0);
+    }
+
+    #[test]
+    fn silence_from_a_live_device_still_counts_as_receiving() {
+        // The difference the meter exists to show: a muted microphone is
+        // delivering audio that happens to be silent, which is not the same
+        // as a microphone that is not there at all.
+        let dir = tempdir().expect("temp dir");
+        let (source, sink, _) = FakeSource::new("mic");
+        let (writer, _, _) = FakeWriter::new();
+
+        let session = RecordingSession::start(
+            dir.path(),
+            vec![(Track::Mic, Box::new(source), Box::new(writer))],
+            counting_converter(Arc::new(AtomicUsize::new(0))),
+        )
+        .expect("session starts");
+
+        push_chunk(&sink, vec![0.0; 64]);
+
+        let levels = session.track_levels();
+        assert!(levels[0].receiving);
+        assert_eq!(levels[0].level, 0.0);
+    }
+
+    #[test]
+    fn a_track_that_never_started_still_gets_a_row() {
+        let dir = tempdir().expect("temp dir");
+        let source = FakeSource::failing_to_start("mic", AudioError::NoDevice("input"));
+        let (writer, _, _) = FakeWriter::new();
+
+        let session = RecordingSession::start(
+            dir.path(),
+            vec![(Track::Mic, Box::new(source), Box::new(writer))],
+            counting_converter(Arc::new(AtomicUsize::new(0))),
+        )
+        .expect("session starts");
+
+        let levels = session.track_levels();
+        assert_eq!(
+            levels.len(),
+            1,
+            "a missing row would read as a healthy track"
+        );
+        assert!(!levels[0].receiving);
+        assert_eq!(levels[0].level, 0.0);
+    }
+
+    #[test]
+    fn a_device_that_stops_delivering_stops_claiming_it_is_receiving() {
+        let dir = tempdir().expect("temp dir");
+        let (source, sink, errors) = FakeSource::with_error_channel("mic");
+        let (writer, _, _) = FakeWriter::new();
+
+        let session = RecordingSession::start(
+            dir.path(),
+            vec![(Track::Mic, Box::new(source), Box::new(writer))],
+            counting_converter(Arc::new(AtomicUsize::new(0))),
+        )
+        .expect("session starts");
+
+        push_chunk(&sink, vec![0.5; 64]);
+        assert!(session.track_levels()[0].receiving);
+
+        fail_device(&errors, AudioError::Stream("device removed".to_owned()));
+        session.age_capture_faults(CAPTURE_FAULT_GRACE);
+        session.age_meters(CAPTURE_FAULT_GRACE);
+
+        assert!(
+            !session.track_levels()[0].receiving,
+            "a lost device must never look like it is still capturing"
+        );
+        assert_eq!(session.track_levels()[0].level, 0.0);
     }
 }

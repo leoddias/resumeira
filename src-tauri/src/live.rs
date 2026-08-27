@@ -7,7 +7,7 @@
 use crate::audio::{decoder, Track};
 use crate::config::Settings;
 use crate::diarize::{self, Turn};
-use crate::pipeline::{SpeakerIdentifier, Summarizer, Transcriber};
+use crate::pipeline::{Sink, SpeakerIdentifier, Summarizer, TrackProgress, Transcriber};
 use crate::secrets::SecretStore;
 use crate::summarize::{self, cli, ChatMessage, SummarizeError, Summary, SummaryEngine};
 use crate::transcribe::routing::{self, Capabilities, Route};
@@ -87,7 +87,12 @@ impl LiveTranscriber {
 }
 
 impl Transcriber for LiveTranscriber {
-    async fn transcribe(&self, track: Track, audio: &Path) -> Result<Transcript, TranscribeError> {
+    async fn transcribe(
+        &self,
+        track: Track,
+        audio: &Path,
+        progress: Sink<TrackProgress>,
+    ) -> Result<Transcript, TranscribeError> {
         // Resolved per call rather than cached: a route that became invalid
         // (key deleted, model removed) must fail, never quietly switch.
         let route = self.context.route()?;
@@ -104,10 +109,29 @@ impl Transcriber for LiveTranscriber {
                 // whisper-rs is CPU-bound and blocking; running it on the
                 // async runtime would stall every other task for minutes.
                 let track_name = format!("{track:?}");
+                let line_sink = progress.clone();
                 tokio::task::spawn_blocking(move || {
-                    local::transcribe(&model_path, &samples, None, move |percent| {
-                        log::debug!("transcribing {track_name}: {percent}%");
-                    })
+                    local::transcribe(
+                        &model_path,
+                        &samples,
+                        None,
+                        move |percent| {
+                            log::debug!("transcribing {track_name}: {percent}%");
+                            progress.report(TrackProgress {
+                                percent: Some(percent),
+                                line: None,
+                            });
+                        },
+                        move |line| {
+                            // Straight to the window, never to the log: this
+                            // is meeting content (docs/CONVENTIONS.md
+                            // § Privacy).
+                            line_sink.report(TrackProgress {
+                                percent: None,
+                                line: Some(line.to_owned()),
+                            });
+                        },
+                    )
                 })
                 .await
                 .map_err(|error| {
@@ -115,6 +139,9 @@ impl Transcriber for LiveTranscriber {
                 })?
             }
             Route::Api { provider } => {
+                // One request, one answer: there is no progress to report
+                // between them, and inventing a moving bar here would be a
+                // lie about how far along the meeting is.
                 let key = self.context.secrets.get(provider.key_name()).map_err(|_| {
                     TranscribeError::MissingKey {
                         provider: provider.key_name(),

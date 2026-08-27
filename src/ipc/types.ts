@@ -22,6 +22,45 @@ export interface TrackStatus {
   error?: string;
 }
 
+/** The post-recording steps, in the order they run. */
+export type ProcessingStage = 'transcribing' | 'identifying' | 'summarizing' | 'saving';
+
+/**
+ * How far transcription has got.
+ *
+ * Carries a line of the meeting, so it belongs on screen and nowhere else —
+ * never logged, never stored. Rust clears it the moment the step ends.
+ */
+export interface TranscribeProgress {
+  track: Track;
+  /** 1-based position among the tracks this meeting recorded. */
+  index: number;
+  total: number;
+  /** 0-100, or absent for an engine that cannot say how far it is. */
+  percent?: number;
+  /** The most recent line the engine produced. */
+  line?: string;
+}
+
+/**
+ * How loud one track is right now.
+ *
+ * Polled several times a second, separately from `RecordingState`: a meter
+ * that only moves when the state changes is not a meter.
+ */
+export interface TrackLevel {
+  track: Track;
+  /** Bar height in 0..1, already scaled for display by Rust. */
+  level: number;
+  /**
+   * Whether the device is delivering audio at all. Silence from a live
+   * device is `level: 0, receiving: true`; a device that is not there is
+   * `false`, and the two mean very different things to someone checking
+   * their microphone.
+   */
+  receiving: boolean;
+}
+
 /** What the app is doing right now. */
 export type RecordingState =
   | { status: 'idle' }
@@ -36,7 +75,11 @@ export type RecordingState =
   | {
       status: 'processing';
       /** Coarse stage so the UI can say something honest while waiting. */
-      stage: 'transcribing' | 'identifying' | 'summarizing' | 'saving';
+      stage: ProcessingStage;
+      /** Unix ms when the pipeline started, for the elapsed-time display. */
+      startedAt: number;
+      /** Only ever present during the transcribing stage. */
+      transcribing?: TranscribeProgress;
     }
   | { status: 'failed'; error: string };
 

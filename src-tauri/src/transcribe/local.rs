@@ -20,7 +20,10 @@
 //! being kept.
 
 use std::ffi::c_int;
-use std::path::Path;
+use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
 
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
@@ -53,7 +56,9 @@ const NO_SPEECH_PROB_THRESHOLD: f32 = 0.5;
 /// reported back in [`Transcript::language`].
 ///
 /// `on_progress` receives a coarse 0-100 percentage as decoding proceeds, so
-/// a caller can move a progress bar.
+/// a caller can move a progress bar. `on_line` receives each segment's text
+/// as whisper produces it, so a caller can show the meeting arriving rather
+/// than a frozen label — see [`preview_line`] for what it is and is not.
 ///
 /// Empty input, and input with no audible signal anywhere in it, never reach
 /// the model at all: both return an empty `Ok` transcript. This is
@@ -63,14 +68,16 @@ const NO_SPEECH_PROB_THRESHOLD: f32 = 0.5;
 /// A missing or unreadable model file is [`TranscribeError::ModelMissing`],
 /// never a panic. Any other whisper-rs failure — a corrupt or unsupported
 /// model, a failure mid-decode — is [`TranscribeError::LocalEngine`].
-pub fn transcribe<F>(
+pub fn transcribe<F, G>(
     model_path: &Path,
     samples: &[f32],
     language: Option<&str>,
     on_progress: F,
+    mut on_line: G,
 ) -> Result<Transcript, TranscribeError>
 where
     F: FnMut(u32) + Send + 'static,
+    G: FnMut(&str) + Send + 'static,
 {
     if !has_signal(samples) {
         return Ok(Transcript {
@@ -82,19 +89,56 @@ where
 
     ensure_readable(model_path)?;
 
-    let ctx = WhisperContext::new_with_params(model_path, WhisperContextParameters::default())
-        .map_err(|err| TranscribeError::LocalEngine(format!("failed to load model: {err}")))?;
+    let ctx = cached_context(model_path)?;
     let mut state = ctx
         .create_state()
         .map_err(|err| TranscribeError::LocalEngine(format!("failed to init state: {err}")))?;
 
     let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 5 });
     params.set_language(language);
+    // whisper.cpp defaults to 4 threads no matter how wide the CPU is; on a
+    // typical 8-core desktop that leaves half the machine idle for the
+    // slowest step this app has. Physical cores, not logical: whisper is
+    // memory-bandwidth-bound, and hyperthreads contend rather than help.
+    params.set_n_threads(decode_threads(num_cpus::get_physical()));
+    // Each 30 s window is decoded fresh, without the previous window's text
+    // as a prompt. Conditioning on prior text is what turns one hallucinated
+    // "Thank you." over a quiet stretch into a run of them: the invented
+    // line becomes the prompt for the next window, which dutifully repeats
+    // it. Losing cross-window context costs a little fluency and buys an end
+    // to the feedback loop.
+    params.set_no_context(true);
+    // Non-speech tokens ((music), [BLANK_AUDIO], …) are suppressed at the
+    // decoder rather than filtered after the fact — the decoder then spends
+    // its probability mass on words or on no-speech, which also sharpens the
+    // no_speech_probability this module already trusts.
+    params.set_suppress_nst(true);
     params.set_print_progress(false);
     params.set_print_special(false);
     params.set_print_realtime(false);
     params.set_print_timestamps(false);
-    params.set_progress_callback_safe(progress_reporter(on_progress));
+    // Both callbacks are caught, because whisper-rs installs them behind a
+    // bare `extern "C"` trampoline with no unwind guard: a panic crossing
+    // that frame aborts the process outright, and `spawn_blocking` never
+    // gets to report it. These run app code now — a sink that reaches Tauri's
+    // event system — so a stray panic there would kill the app *after* the
+    // meeting, with the note unwritten. Reporting is decoration; losing it
+    // is always better than losing the note.
+    let mut report_progress = progress_reporter(on_progress);
+    params.set_progress_callback_safe(move |percent: i32| {
+        let _ = catch_unwind(AssertUnwindSafe(|| report_progress(percent)));
+    });
+    // The non-lossy variant on purpose: it skips a segment whose bytes are
+    // not valid UTF-8, where `set_segment_callback_safe_lossy` in whisper-rs
+    // 0.16 declares a trampoline with one argument too many. A preview is
+    // not worth an ABI mismatch inside a C callback during a real meeting.
+    params.set_segment_callback_safe(move |data: whisper_rs::SegmentCallbackData| {
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+            if let Some(line) = preview_line(&data.text) {
+                on_line(&line);
+            }
+        }));
+    });
 
     state
         .full(params, samples)
@@ -120,10 +164,39 @@ where
     let language = language_tag(state.full_lang_id_from_state());
 
     Ok(Transcript {
-        segments,
+        segments: super::collapse_repeated_segments(segments),
         language,
         engine: Engine::Local,
     })
+}
+
+/// The longest preview line worth carrying. A recording bar shows a clause,
+/// not a paragraph.
+const PREVIEW_MAX_CHARS: usize = 200;
+
+/// One segment's text as it should appear in a live preview, or nothing.
+///
+/// A *preview*, not a transcript: this sees text only, so it cannot apply
+/// the checks [`map_segment`] applies with the audio in hand. It drops the
+/// obvious noise — blank text and whisper's bracketed placeholders
+/// (`[BLANK_AUDIO]`, `(music)`) — and lets everything else through, up to
+/// [`PREVIEW_MAX_CHARS`]. A line shown here may still be dropped from the
+/// finished note, which is the right way round: the note stays strict, the
+/// preview stays alive.
+fn preview_line(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let placeholder = (trimmed.starts_with('[') && trimmed.ends_with(']'))
+        || (trimmed.starts_with('(') && trimmed.ends_with(')'));
+    if placeholder {
+        return None;
+    }
+    // Bounded before it goes anywhere: a preview line crosses IPC and sits
+    // in the app's state, and one line is all the bar can show anyway. A
+    // pathological segment must not put an unbounded string there.
+    Some(trimmed.chars().take(PREVIEW_MAX_CHARS).collect())
 }
 
 /// Wraps a caller's progress callback so whisper-rs's `i32` percentage
@@ -149,6 +222,85 @@ fn ensure_readable(model_path: &Path) -> Result<(), TranscribeError> {
         .map_err(|_| TranscribeError::ModelMissing {
             model: model_path.display().to_string(),
         })
+}
+
+/// How many threads whisper decodes with, given the machine's physical core
+/// count. At least one, and never more cores than exist; the count is
+/// otherwise the full set of physical cores, because transcription runs
+/// after the meeting, when there is no live audio thread to starve.
+fn decode_threads(physical_cores: usize) -> c_int {
+    physical_cores.clamp(1, c_int::MAX as usize) as c_int
+}
+
+/// The identity of a model file at load time. If any of it changes — the
+/// path, the size, the mtime — the cached context is stale and reloaded.
+#[derive(Clone)]
+struct ModelIdentity {
+    path: PathBuf,
+    len: u64,
+    modified: Option<SystemTime>,
+}
+
+impl ModelIdentity {
+    fn of(model_path: &Path) -> std::io::Result<Self> {
+        let meta = std::fs::metadata(model_path)?;
+        Ok(Self {
+            path: model_path.to_owned(),
+            len: meta.len(),
+            modified: meta.modified().ok(),
+        })
+    }
+
+    /// Whether a cached context loaded under `self` still stands for the
+    /// file described by `current`. A filesystem that cannot report mtime
+    /// (`modified` is `None` on either side) never matches: reloading a
+    /// model needlessly is cheap, serving a stale one is wrong.
+    fn matches(&self, current: &Self) -> bool {
+        match (self.modified, current.modified) {
+            (Some(a), Some(b)) => self.path == current.path && self.len == current.len && a == b,
+            _ => false,
+        }
+    }
+}
+
+/// The most recently loaded model, kept resident between tracks and between
+/// meetings.
+///
+/// Loading a ggml model reads hundreds of megabytes to gigabytes from disk
+/// and was previously done once *per track* — a two-track meeting paid it
+/// twice, back to back, for the same file. The cache holds exactly one
+/// context (the app has exactly one configured model at a time), so the
+/// steady-state memory cost is the model the user chose to run locally,
+/// which they already accepted by choosing the local route. A changed or
+/// replaced model file is detected by [`ModelIdentity`] and reloaded.
+static MODEL_CACHE: Mutex<Option<(ModelIdentity, Arc<WhisperContext>)>> = Mutex::new(None);
+
+/// Returns a context for the model at `model_path`, loading it only if the
+/// cache does not already hold this exact file.
+fn cached_context(model_path: &Path) -> Result<Arc<WhisperContext>, TranscribeError> {
+    let identity = ModelIdentity::of(model_path).map_err(|_| TranscribeError::ModelMissing {
+        model: model_path.display().to_string(),
+    })?;
+
+    let mut cache = MODEL_CACHE.lock().unwrap_or_else(|poisoned| {
+        // A panic while holding the lock can only have happened between
+        // plain assignments; the Option inside is still coherent. Clearing
+        // it below on miss makes recovery safe either way.
+        poisoned.into_inner()
+    });
+    if let Some((cached_identity, ctx)) = cache.as_ref() {
+        if cached_identity.matches(&identity) {
+            return Ok(Arc::clone(ctx));
+        }
+    }
+    // Drop the stale context before loading the new one, so two models are
+    // never resident at once.
+    *cache = None;
+    let ctx = WhisperContext::new_with_params(model_path, WhisperContextParameters::default())
+        .map_err(|err| TranscribeError::LocalEngine(format!("failed to load model: {err}")))?;
+    let ctx = Arc::new(ctx);
+    *cache = Some((identity, Arc::clone(&ctx)));
+    Ok(ctx)
 }
 
 /// Whether `samples` carries anything above the noise floor.
@@ -286,7 +438,7 @@ mod tests {
         // the model is even looked at.
         let samples = sine(1.0, 440.0);
 
-        let err = transcribe(&missing, &samples, None, |_| {}).unwrap_err();
+        let err = transcribe(&missing, &samples, None, |_| {}, |_| {}).unwrap_err();
         assert!(matches!(err, TranscribeError::ModelMissing { .. }));
     }
 
@@ -298,7 +450,7 @@ mod tests {
         std::fs::create_dir(&not_a_file).unwrap();
         let samples = sine(1.0, 440.0);
 
-        let err = transcribe(&not_a_file, &samples, None, |_| {}).unwrap_err();
+        let err = transcribe(&not_a_file, &samples, None, |_| {}, |_| {}).unwrap_err();
         assert!(matches!(err, TranscribeError::ModelMissing { .. }));
     }
 
@@ -309,7 +461,8 @@ mod tests {
         // even look at the model.
         let missing = dir.path().join("does-not-exist.bin");
 
-        let transcript = transcribe(&missing, &[], None, |_| {}).expect("empty input is Ok");
+        let transcript =
+            transcribe(&missing, &[], None, |_| {}, |_| {}).expect("empty input is Ok");
         assert!(transcript.segments.is_empty());
         assert_eq!(transcript.engine, Engine::Local);
     }
@@ -320,11 +473,27 @@ mod tests {
         let missing = dir.path().join("does-not-exist.bin");
         let samples = silence(5.0);
 
-        let transcript = transcribe(&missing, &samples, None, |_| {}).expect("silent input is Ok");
+        let transcript =
+            transcribe(&missing, &samples, None, |_| {}, |_| {}).expect("silent input is Ok");
         assert!(
             transcript.segments.is_empty(),
             "a silent recording must never produce hallucinated segments"
         );
+    }
+
+    // --- decode_threads(): the pure thread-count decision ---
+
+    #[test]
+    fn decode_threads_uses_every_physical_core() {
+        assert_eq!(decode_threads(8), 8);
+        assert_eq!(decode_threads(16), 16);
+    }
+
+    #[test]
+    fn decode_threads_never_goes_below_one() {
+        // `num_cpus::get_physical` cannot return 0, but a lie from a weird
+        // VM must not become a 0-thread whisper call.
+        assert_eq!(decode_threads(0), 1);
     }
 
     // --- has_signal(): the pure silence detector ---
@@ -426,8 +595,62 @@ mod tests {
         let model_path = std::env::var("WHISPER_TEST_MODEL")
             .expect("set WHISPER_TEST_MODEL to a downloaded ggml model path");
         let samples = sine(2.0, 440.0); // not real speech, just exercises the path
-        let transcript = transcribe(Path::new(&model_path), &samples, None, |_| {})
+        let transcript = transcribe(Path::new(&model_path), &samples, None, |_| {}, |_| {})
             .expect("transcription against a real model succeeds");
         assert_eq!(transcript.engine, Engine::Local);
+    }
+
+    // --- preview_line(): what a live preview is allowed to show ---
+
+    #[test]
+    fn a_spoken_line_is_previewed_trimmed() {
+        assert_eq!(
+            preview_line("  hello there  "),
+            Some("hello there".to_owned())
+        );
+    }
+
+    #[test]
+    fn blank_text_is_never_previewed() {
+        assert_eq!(preview_line(""), None);
+        assert_eq!(
+            preview_line(
+                "   
+ "
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn whispers_bracketed_placeholders_are_never_previewed() {
+        // These are whisper saying "I heard nothing"; showing them would
+        // read as the meeting having said them.
+        assert_eq!(preview_line("[BLANK_AUDIO]"), None);
+        assert_eq!(preview_line(" (music) "), None);
+    }
+
+    #[test]
+    fn a_runaway_segment_is_cut_before_it_crosses_ipc() {
+        let long = "a".repeat(PREVIEW_MAX_CHARS * 3);
+        let previewed = preview_line(&long).expect("still a line");
+        assert_eq!(previewed.chars().count(), PREVIEW_MAX_CHARS);
+    }
+
+    #[test]
+    fn the_cut_never_splits_a_character() {
+        // Truncating by bytes would panic or produce invalid text; the cap
+        // counts characters.
+        let long = "é".repeat(PREVIEW_MAX_CHARS * 2);
+        let previewed = preview_line(&long).expect("still a line");
+        assert_eq!(previewed.chars().count(), PREVIEW_MAX_CHARS);
+    }
+
+    #[test]
+    fn a_line_that_merely_contains_brackets_is_still_previewed() {
+        assert_eq!(
+            preview_line("we shipped [finally] last night"),
+            Some("we shipped [finally] last night".to_owned())
+        );
     }
 }

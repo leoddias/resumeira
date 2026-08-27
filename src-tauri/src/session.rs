@@ -38,6 +38,46 @@ pub struct TrackStatus {
     pub error: Option<String>,
 }
 
+/// One track's current loudness, as the UI sees it.
+///
+/// Serializes to `TrackLevel` in `src/ipc/types.ts`; the shape is asserted
+/// in this module's tests so the two cannot drift apart silently.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackLevel {
+    pub track: Track,
+    /// Bar height in `0.0..=1.0`, already scaled for display.
+    pub level: f32,
+    /// Whether the device is delivering audio at all. Silence from a live
+    /// device reads `level: 0.0, receiving: true`; a device that is not
+    /// there reads `false`, and the UI says something different about each.
+    pub receiving: bool,
+}
+
+/// How far the transcription step has got, for the UI.
+///
+/// Carries a line of the meeting, so it goes to the window and nowhere else:
+/// never to a log, never to disk (docs/CONVENTIONS.md § Privacy). It is
+/// cleared the moment transcription ends, so no fragment of a meeting is
+/// left sitting in the app's state.
+///
+/// Serializes to `TranscribeProgress` in `src/ipc/types.ts`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscribeProgress {
+    pub track: Track,
+    /// 1-based position among the tracks this meeting recorded.
+    pub index: usize,
+    pub total: usize,
+    /// 0-100, or absent for an engine that cannot say — the UI shows an
+    /// indeterminate bar rather than a made-up number.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub percent: Option<u32>,
+    /// The most recent line the engine produced, when it produced one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line: Option<String>,
+}
+
 /// What the app is doing right now.
 ///
 /// Serializes to the discriminated union declared in `src/ipc/types.ts`;
@@ -58,6 +98,12 @@ pub enum RecordingState {
     #[serde(rename_all = "camelCase")]
     Processing {
         stage: ProcessingStage,
+        /// Unix milliseconds when the pipeline started, so the UI can show
+        /// how long the wait has been rather than a label that never moves.
+        started_at: i64,
+        /// Only ever set during [`ProcessingStage::Transcribing`].
+        #[serde(skip_serializing_if = "Option::is_none")]
+        transcribing: Option<TranscribeProgress>,
     },
     #[serde(rename_all = "camelCase")]
     Failed {
@@ -162,6 +208,30 @@ impl SessionManager {
                 }
             }
             _ => inner.state.clone(),
+        }
+    }
+
+    /// How loud each track is right now, for the UI's activity meter.
+    ///
+    /// Deliberately not part of [`RecordingState`]: this is polled several
+    /// times a second, and folding it into the state would push a full state
+    /// event — tray included — at the same rate. Empty when nothing is
+    /// recording, so a stale poll after `stop` cannot leave a bar standing.
+    pub fn levels(&self) -> Vec<TrackLevel> {
+        let Ok(inner) = self.inner.lock() else {
+            return Vec::new();
+        };
+        match (&inner.state, &inner.session) {
+            (RecordingState::Recording { .. }, Some(session)) => session
+                .track_levels()
+                .into_iter()
+                .map(|level| TrackLevel {
+                    track: level.track,
+                    level: level.level,
+                    receiving: level.receiving,
+                })
+                .collect(),
+            _ => Vec::new(),
         }
     }
 
@@ -274,7 +344,7 @@ impl SessionManager {
     /// Ends the meeting and returns both the new state and what was recorded.
     ///
     /// The report is `None` when there was nothing to stop.
-    pub fn stop(&self) -> (RecordingState, Option<StopReport>) {
+    pub fn stop(&self, now_ms: i64) -> (RecordingState, Option<StopReport>) {
         let mut inner = match self.inner.lock() {
             Ok(inner) => inner,
             Err(_) => {
@@ -302,16 +372,53 @@ impl SessionManager {
         let report = session.stop();
         inner.state = RecordingState::Processing {
             stage: ProcessingStage::Saving,
+            started_at: now_ms,
+            transcribing: None,
         };
         (inner.state.clone(), Some(report))
     }
 
     /// Moves to a post-recording stage. Ignored unless the app is processing.
+    ///
+    /// Leaving [`ProcessingStage::Transcribing`] drops the preview: the
+    /// transcript line it carries has no reason to outlive the step that
+    /// produced it, and a stale one under "Writing notes…" would be a lie
+    /// about what the app is doing.
     pub fn set_stage(&self, stage: ProcessingStage) -> RecordingState {
         match self.inner.lock() {
             Ok(mut inner) => {
-                if matches!(inner.state, RecordingState::Processing { .. }) {
-                    inner.state = RecordingState::Processing { stage };
+                if let RecordingState::Processing { started_at, .. } = inner.state {
+                    inner.state = RecordingState::Processing {
+                        stage,
+                        started_at,
+                        transcribing: None,
+                    };
+                }
+                inner.state.clone()
+            }
+            Err(_) => RecordingState::Failed {
+                error: "recording state is unavailable".to_owned(),
+            },
+        }
+    }
+
+    /// Records how far transcription has got. Ignored unless that is the
+    /// stage the app is actually in, so a late callback from a finished
+    /// track cannot reopen a step the pipeline has already left.
+    pub fn set_transcribe_progress(&self, progress: TranscribeProgress) -> RecordingState {
+        match self.inner.lock() {
+            Ok(mut inner) => {
+                if let RecordingState::Processing {
+                    stage: ProcessingStage::Transcribing,
+                    started_at,
+                    ..
+                } = inner.state
+                {
+                    inner.state = RecordingState::Processing {
+                        stage: ProcessingStage::Transcribing,
+                        started_at,
+                        transcribing: Some(progress),
+                    };
                 }
                 inner.state.clone()
             }
@@ -483,11 +590,13 @@ mod tests {
     fn stop_moves_to_processing_and_returns_a_report() {
         let (manager, _dir) = manager(Track::all().to_vec());
         manager.start(1_000);
-        let (state, report) = manager.stop();
+        let (state, report) = manager.stop(2_000);
         assert_eq!(
             state,
             RecordingState::Processing {
-                stage: ProcessingStage::Saving
+                stage: ProcessingStage::Saving,
+                started_at: 2_000,
+                transcribing: None,
             }
         );
         let report = report.expect("a stopped meeting reports what it recorded");
@@ -498,7 +607,7 @@ mod tests {
     #[test]
     fn stopping_when_idle_is_harmless() {
         let (manager, _dir) = manager(Track::all().to_vec());
-        let (state, report) = manager.stop();
+        let (state, report) = manager.stop(2_000);
         assert_eq!(state, RecordingState::Idle);
         assert!(report.is_none());
     }
@@ -507,8 +616,8 @@ mod tests {
     fn stopping_twice_reports_nothing_the_second_time() {
         let (manager, _dir) = manager(Track::all().to_vec());
         manager.start(1_000);
-        let (_, first) = manager.stop();
-        let (_, second) = manager.stop();
+        let (_, first) = manager.stop(2_000);
+        let (_, second) = manager.stop(3_000);
         assert!(first.is_some());
         assert!(second.is_none());
     }
@@ -609,7 +718,7 @@ mod tests {
     fn finish_returns_to_idle() {
         let (manager, _dir) = manager(Track::all().to_vec());
         manager.start(1_000);
-        manager.stop();
+        manager.stop(2_000);
         assert_eq!(manager.finish(), RecordingState::Idle);
         assert!(manager.state().can_start());
     }
@@ -621,11 +730,13 @@ mod tests {
         assert_eq!(manager.state(), RecordingState::Idle);
 
         manager.start(1_000);
-        manager.stop();
+        manager.stop(2_000);
         assert_eq!(
             manager.set_stage(ProcessingStage::Transcribing),
             RecordingState::Processing {
-                stage: ProcessingStage::Transcribing
+                stage: ProcessingStage::Transcribing,
+                started_at: 2_000,
+                transcribing: None,
             }
         );
     }
@@ -658,11 +769,41 @@ mod tests {
 
         let processing = serde_json::to_value(RecordingState::Processing {
             stage: ProcessingStage::Transcribing,
+            started_at: 7,
+            transcribing: None,
         })
         .expect("serialize");
         assert_eq!(
             processing,
-            serde_json::json!({ "status": "processing", "stage": "transcribing" })
+            serde_json::json!({ "status": "processing", "stage": "transcribing", "startedAt": 7 })
+        );
+
+        let with_progress = serde_json::to_value(RecordingState::Processing {
+            stage: ProcessingStage::Transcribing,
+            started_at: 7,
+            transcribing: Some(TranscribeProgress {
+                track: Track::Mic,
+                index: 1,
+                total: 2,
+                percent: Some(40),
+                line: Some("so that is the plan".to_owned()),
+            }),
+        })
+        .expect("serialize");
+        assert_eq!(
+            with_progress,
+            serde_json::json!({
+                "status": "processing",
+                "stage": "transcribing",
+                "startedAt": 7,
+                "transcribing": {
+                    "track": "mic",
+                    "index": 1,
+                    "total": 2,
+                    "percent": 40,
+                    "line": "so that is the plan"
+                }
+            })
         );
 
         let failed = serde_json::to_value(RecordingState::Failed {
@@ -693,5 +834,132 @@ mod tests {
                 "error": "no output device available"
             })
         );
+    }
+
+    #[test]
+    fn levels_are_empty_unless_a_recording_is_running() {
+        let (manager, _dir) = manager(vec![Track::Mic]);
+        assert!(manager.levels().is_empty(), "idle must not draw a meter");
+
+        manager.start(0);
+        assert_eq!(manager.levels().len(), 1);
+
+        manager.stop(2_000);
+        assert!(
+            manager.levels().is_empty(),
+            "a poll landing after stop must not leave a bar standing"
+        );
+    }
+
+    #[test]
+    fn a_silent_but_live_track_reports_an_empty_meter() {
+        let (manager, _dir) = manager(vec![Track::Mic, Track::System]);
+        manager.start(0);
+
+        let levels = manager.levels();
+        assert_eq!(levels.len(), 2, "one row per track, always");
+        assert!(levels.iter().all(|l| l.level == 0.0));
+        assert!(
+            levels.iter().all(|l| !l.receiving),
+            "no chunk has arrived yet, so nothing is receiving"
+        );
+    }
+
+    #[test]
+    fn track_level_serializes_to_the_shape_the_frontend_expects() {
+        let level = serde_json::to_value(TrackLevel {
+            track: Track::System,
+            level: 0.5,
+            receiving: true,
+        })
+        .expect("serialize");
+        assert_eq!(
+            level,
+            serde_json::json!({ "track": "system", "level": 0.5, "receiving": true })
+        );
+    }
+
+    #[test]
+    fn transcription_progress_is_kept_only_while_transcribing() {
+        let (manager, _dir) = manager(vec![Track::Mic]);
+        let progress = TranscribeProgress {
+            track: Track::Mic,
+            index: 1,
+            total: 1,
+            percent: Some(30),
+            line: Some("what someone said".to_owned()),
+        };
+
+        // Nothing is running: a stray callback must not invent a state.
+        assert_eq!(
+            manager.set_transcribe_progress(progress.clone()),
+            RecordingState::Idle
+        );
+
+        manager.start(1_000);
+        manager.stop(2_000);
+        manager.set_stage(ProcessingStage::Transcribing);
+        assert_eq!(
+            manager.set_transcribe_progress(progress.clone()),
+            RecordingState::Processing {
+                stage: ProcessingStage::Transcribing,
+                started_at: 2_000,
+                transcribing: Some(progress.clone()),
+            }
+        );
+
+        // A late callback from a finished track must not reopen a step the
+        // pipeline has already left.
+        manager.set_stage(ProcessingStage::Summarizing);
+        assert_eq!(
+            manager.set_transcribe_progress(progress),
+            RecordingState::Processing {
+                stage: ProcessingStage::Summarizing,
+                started_at: 2_000,
+                transcribing: None,
+            }
+        );
+    }
+
+    #[test]
+    fn no_fragment_of_the_meeting_outlives_the_transcription_step() {
+        let (manager, _dir) = manager(vec![Track::Mic]);
+        manager.start(1_000);
+        manager.stop(2_000);
+        manager.set_stage(ProcessingStage::Transcribing);
+        manager.set_transcribe_progress(TranscribeProgress {
+            track: Track::Mic,
+            index: 1,
+            total: 1,
+            percent: Some(90),
+            line: Some("something confidential".to_owned()),
+        });
+
+        let state = manager.set_stage(ProcessingStage::Summarizing);
+        match state {
+            RecordingState::Processing { transcribing, .. } => assert!(transcribing.is_none()),
+            other => panic!("expected processing, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_processing_clock_starts_when_the_recording_stops() {
+        let (manager, _dir) = manager(vec![Track::Mic]);
+        manager.start(1_000);
+        manager.stop(5_000);
+
+        for stage in [
+            ProcessingStage::Transcribing,
+            ProcessingStage::Identifying,
+            ProcessingStage::Summarizing,
+        ] {
+            match manager.set_stage(stage) {
+                RecordingState::Processing { started_at, .. } => assert_eq!(
+                    started_at, 5_000,
+                    "the wait is measured from one moment, not restarted per stage"
+                ),
+                other => panic!("expected processing, got {other:?}"),
+            }
+        }
     }
 }

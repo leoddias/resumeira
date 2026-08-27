@@ -14,7 +14,7 @@ vi.mock('../ipc/recording', () => ({
 const { useCompletedPipelines } = await import('./useRecording');
 
 const idle: RecordingState = { status: 'idle' };
-const processing: RecordingState = { status: 'processing', stage: 'summarizing' };
+const processing: RecordingState = { status: 'processing', stage: 'summarizing', startedAt: 0 };
 const recording: RecordingState = { status: 'recording', startedAt: Date.now(), tracks: [] };
 
 function track([first, ...rest]: [RecordingState, ...RecordingState[]]) {
@@ -49,8 +49,12 @@ describe('useCompletedPipelines', () => {
   });
 
   it('does not count the stages within one pipeline', () => {
-    const transcribing: RecordingState = { status: 'processing', stage: 'transcribing' };
-    const saving: RecordingState = { status: 'processing', stage: 'saving' };
+    const transcribing: RecordingState = {
+      status: 'processing',
+      stage: 'transcribing',
+      startedAt: 0,
+    };
+    const saving: RecordingState = { status: 'processing', stage: 'saving', startedAt: 0 };
     expect(track([transcribing, processing, saving, idle]).current).toBe(1);
   });
 });

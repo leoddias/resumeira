@@ -4,13 +4,18 @@
 //! disagree about whether a recording is running. Every state change is
 //! emitted to the frontend and reflected in the tray.
 
-use crate::session::{ProcessingStage, RecordingState, SessionManager};
+use crate::session::{
+    ProcessingStage, RecordingState, SessionManager, TrackLevel, TranscribeProgress,
+};
 use crate::tray;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 /// Event the frontend listens on. Mirrors `RECORDING_STATE_EVENT` in
 /// `src/ipc/types.ts`.
 pub const RECORDING_STATE_EVENT: &str = "recording-state";
+
+/// The window that renders the app. Matches the label in `tauri.conf.json`.
+const MAIN_WINDOW: &str = "main";
 
 /// Starts a recording, whatever asked for it.
 ///
@@ -50,7 +55,7 @@ pub fn stop<R: Runtime>(app: &AppHandle<R>) -> RecordingState {
         return unavailable();
     };
 
-    let (state, report) = manager.stop();
+    let (state, report) = manager.stop(now_ms());
     publish(app, &state);
 
     let Some(report) = report else {
@@ -143,6 +148,7 @@ async fn run_pipeline<R: Runtime>(
     let identifier = identify_speakers.then(|| crate::live::LiveIdentifier::new(context));
 
     let stage_app = app.clone();
+    let progress_app = app.clone();
     let outcome = crate::pipeline::process(
         folder,
         &transcriber,
@@ -160,6 +166,22 @@ async fn run_pipeline<R: Runtime>(
                 publish(&stage_app, &state);
             }
         },
+        crate::pipeline::Sink::new(move |progress: crate::pipeline::Transcribing| {
+            if let Some(manager) = progress_app.try_state::<SessionManager>() {
+                let state = manager.set_transcribe_progress(TranscribeProgress {
+                    track: progress.track,
+                    index: progress.index,
+                    total: progress.total,
+                    percent: progress.percent,
+                    line: progress.line,
+                });
+                // The window only. This fires many times a second and the
+                // tray shows the coarse stage, which has not changed — and
+                // the payload carries a line of the meeting, which has no
+                // business in a tray tooltip.
+                emit(&progress_app, &state);
+            }
+        }),
     )
     .await?;
 
@@ -176,10 +198,21 @@ async fn run_pipeline<R: Runtime>(
 
 /// Pushes a state change to the window and the tray.
 fn publish<R: Runtime>(app: &AppHandle<R>, state: &RecordingState) {
-    if let Err(error) = app.emit(RECORDING_STATE_EVENT, state) {
+    emit(app, state);
+    tray::reflect_state(app, state);
+}
+
+/// Pushes a state change to the main window alone.
+///
+/// For updates that arrive at UI speed — a progress bar, a preview line —
+/// where redrawing the tray on every one would be pure churn. Addressed to
+/// `main` rather than broadcast: the payload can carry a line of the
+/// meeting, so it goes to the one window that is meant to show it and not
+/// to whatever webview is opened here next.
+fn emit<R: Runtime>(app: &AppHandle<R>, state: &RecordingState) {
+    if let Err(error) = app.emit_to(MAIN_WINDOW, RECORDING_STATE_EVENT, state) {
         log::warn!("could not publish recording state: {error}");
     }
-    tray::reflect_state(app, state);
 }
 
 /// Why this recording must not start, if it must not (ADR-0019).
@@ -216,6 +249,20 @@ pub fn start_recording<R: Runtime>(app: AppHandle<R>) -> RecordingState {
 #[tauri::command]
 pub fn stop_recording<R: Runtime>(app: AppHandle<R>) -> RecordingState {
     stop(&app)
+}
+
+/// How loud each track is right now.
+///
+/// Its own command rather than a field on the recording state: the meter is
+/// polled several times a second, and pushing a full state event — window
+/// and tray — at that rate to move a bar would be absurd. Returns an empty
+/// list when nothing is recording.
+#[tauri::command]
+pub fn recording_levels<R: Runtime>(app: AppHandle<R>) -> Vec<TrackLevel> {
+    match app.try_state::<SessionManager>() {
+        Some(manager) => manager.levels(),
+        None => Vec::new(),
+    }
 }
 
 #[tauri::command]

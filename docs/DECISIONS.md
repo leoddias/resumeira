@@ -384,3 +384,47 @@ loss: track attribution was computed, then discarded at write time, so the
 "You/Others" badge never survived a reload. Participants are derived in Rust
 from the labelled transcript, not asked of the model, so ADR-0006's fixed
 summary template stands unchanged.
+
+## ADR-0022 — The app shows its own activity: an audio meter while recording, progress and a transcript preview while processing
+**Date:** 2026-08-26 · **Status:** accepted
+**Decision:** Two live signals are added to the recording bar. While
+recording, each track shows a peak meter fed from the chunk sink
+(`audio::level::LevelMeter`), read through a dedicated `recording_levels`
+command polled at 10 Hz and kept out of `RecordingState`. While the pipeline
+runs, `RecordingState::Processing` carries `started_at` and, during
+transcription only, a `TranscribeProgress { track, index, total, percent,
+line }` — where `line` is one line of the meeting's own transcript, pushed to
+the window as whisper produces it and cleared the moment the step ends. The
+local engine reports both percent and lines; a cloud engine reports neither,
+and the UI shows an indeterminate bar rather than a fabricated number.
+**Why:** Two silent failures, both discovered too late to do anything about
+them. A muted or wrong input device looks exactly like a working one for the
+whole meeting; a meter is the only thing that can tell them apart while the
+meeting can still be saved. And turning an hour of audio into a note takes
+minutes behind a label that never changes, which is indistinguishable from a
+hang — the first real recording attempt (session log, 2026-08-20) already
+failed in a way the user could only see after the fact. Rejected: **folding
+levels into `RecordingState`** — a meter needs ~10 updates a second, and every
+one would push a full state event through the tray as well. Rejected:
+**pushing levels from Rust on a timer** — polling stops on its own when the
+window closes, and nothing has to be torn down. Rejected: **a spinner only** —
+it says the app is alive, not that it is hearing anything, which is the whole
+question. Rejected: **animating a fake progress bar for the cloud route** — a
+single request has nothing to report between sending and receiving.
+**Consequences:** A fragment of transcript now crosses IPC while the meeting
+is being transcribed. It is bounded (the most recent line, capped at 200
+characters, replaced rather than accumulated), it is cleared when the stage
+ends, it is addressed to the `main` window rather than broadcast to every
+webview, and it is never logged — the existing rule that transcripts
+stay out of logs now has a second place it has to hold, in `live.rs`, beside
+the progress callback that *is* logged. The frontend keeps the last three
+lines for display only. `preview_line` is a text-only filter and cannot apply
+the audio checks `map_segment` applies, so a line may appear in the preview
+and not in the finished note; the note stays strict and the preview stays
+alive, deliberately in that order. `Transcriber::transcribe` gains a progress
+sink, and `SessionManager::stop` now takes the clock, so the wait is measured
+from one moment rather than restarted per stage. Both whisper callbacks are
+wrapped in `catch_unwind`: whisper-rs installs them behind a bare `extern
+"C"` trampoline, where a panic aborts the process, and neither reporting a
+percentage nor previewing a line is worth losing a finished meeting to.
+

@@ -62,6 +62,22 @@ body {
 .dot--live {
   background: var(--accent);
   box-shadow: 0 0 0 4px rgb(217 83 79 / 25%);
+  position: relative;
+}
+
+/*
+ * A halo the size of the loudest track. Scaled inline from the live level,
+ * so the indicator answers "is it hearing anything?" rather than just
+ * "is it running?".
+ */
+.dot__halo {
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  border: 1px solid var(--accent);
+  opacity: 0.55;
+  transform-origin: center;
+  transition: transform 90ms linear;
 }
 
 .recording-bar__elapsed {
@@ -79,13 +95,113 @@ body {
   font-size: 0.875rem;
 }
 
+.track {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
 .track--stopped {
   text-decoration: line-through;
+}
+
+/* Per-track loudness. Width is set inline from the level Rust reports. */
+.meter {
+  display: block;
+  width: 64px;
+  height: 6px;
+  border-radius: 3px;
+  background: #2a2b33;
+  overflow: hidden;
+}
+
+.meter__fill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 90ms linear;
+}
+
+/* Nothing has arrived from this device yet — not the same as silence. */
+.meter--waiting {
+  opacity: 0.4;
+  outline: 1px dashed #4a4b55;
+  outline-offset: 1px;
 }
 
 .track__error {
   text-decoration: none;
   color: var(--accent);
+}
+
+/*
+ * What the pipeline is doing after the meeting. This is the longest wait in
+ * the app, so it gets a bar and the last line heard rather than a label.
+ */
+.progress {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex: 1 1 240px;
+  min-width: 0;
+  font-size: 0.875rem;
+  color: var(--muted);
+}
+
+.progress__track {
+  white-space: nowrap;
+}
+
+.progress__bar {
+  display: block;
+  flex: 0 0 120px;
+  height: 6px;
+  border-radius: 3px;
+  background: #2a2b33;
+  overflow: hidden;
+}
+
+.progress__fill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 200ms linear;
+}
+
+/* No percentage to show: sweep instead of standing still. */
+.progress__bar--waiting .progress__fill {
+  width: 40%;
+  animation: progress-sweep 1.4s ease-in-out infinite;
+}
+
+@keyframes progress-sweep {
+  0% {
+    transform: translateX(-100%);
+  }
+
+  100% {
+    transform: translateX(250%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .progress__bar--waiting .progress__fill {
+    animation: none;
+    width: 100%;
+    opacity: 0.5;
+  }
+}
+
+/* The meeting arriving, one line at a time. Never stored, never logged. */
+.progress__preview {
+  margin: 0;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-style: italic;
+  opacity: 0.8;
 }
 
 /* Why the Start button is dead, stated where the button is. */

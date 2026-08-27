@@ -8,16 +8,27 @@ import {
 import { INITIAL_RECORDING_STATE, type RecordingState } from '../ipc/types';
 
 /**
+ * How many transcript lines the preview keeps on screen.
+ *
+ * Enough to look like speech arriving, few enough that the recording bar
+ * stays a bar. The transcript itself is the note, not this.
+ */
+const PREVIEW_LINES = 3;
+
+/** How often to re-ask Rust for per-track liveness while recording. */
+const REFRESH_INTERVAL_MS = 2000;
+
+/**
  * Live recording state, kept in sync with the Rust core.
  *
  * State is owned by Rust — the tray can start a recording without the window
  * being open — so this hook reflects it rather than holding its own copy.
  */
-/** How often to re-ask Rust for per-track liveness while recording. */
-const REFRESH_INTERVAL_MS = 2000;
-
 export function useRecording() {
   const [state, setState] = useState<RecordingState>(INITIAL_RECORDING_STATE);
+  // Rust sends one line at a time and keeps none of them; the few lines the
+  // preview shows are accumulated here and dropped when the step ends.
+  const [preview, setPreview] = useState<string[]>([]);
 
   useEffect(() => {
     let active = true;
@@ -32,7 +43,11 @@ export function useRecording() {
       });
 
     onRecordingState((next) => {
-      if (active) setState(next);
+      if (!active) return;
+      setState(next);
+      // Only from pushed events: a poll would re-deliver the line that is
+      // already on screen and print it twice.
+      setPreview((lines) => nextPreview(lines, next));
     })
       .then((fn) => {
         if (active) unlisten = fn;
@@ -91,7 +106,24 @@ export function useRecording() {
     }
   }, []);
 
-  return { state, start, stop };
+  return { state, start, stop, preview };
+}
+
+/**
+ * The preview lines after `state` arrives.
+ *
+ * Pure, and exported, because the rule it encodes is worth pinning: the
+ * preview belongs to one transcription step and does not outlive it.
+ */
+export function nextPreview(lines: string[], state: RecordingState): string[] {
+  if (state.status !== 'processing' || state.stage !== 'transcribing') {
+    return lines.length === 0 ? lines : [];
+  }
+  const line = state.transcribing?.line;
+  if (line === undefined) {
+    return lines;
+  }
+  return [...lines, line].slice(-PREVIEW_LINES);
 }
 
 /**

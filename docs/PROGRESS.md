@@ -4,7 +4,7 @@
 
 Phase: **M5 — polish before the dogfood gate**. M0–M4 have landed.
 
-Verified by tests (323 Rust tests + 3 hardware-only ignored, 112 frontend
+Verified by tests (407 Rust tests + 3 hardware-only ignored, 146 frontend
 tests; clippy and fmt clean):
 
 - Recording: mic + system loopback via cpal/WASAPI at the device's native
@@ -25,7 +25,13 @@ tests; clippy and fmt clean):
 - UI: meetings list with search, note view, settings with write-only keys,
   recording bar, navigation, and a blocking setup screen that offers the fix
   inline.
+- The app shows its own activity (ADR-0022): a per-track audio meter while
+  recording, and a progress bar, track counter, clock and live transcript
+  preview while the pipeline runs.
 - Secrets in the OS keychain; settings as plain JSON with no secrets in it.
+- Local whisper uses all physical cores and a process-lifetime model cache;
+  both engines collapse gap-separated hallucination runs ("Thank you." over
+  silence).
 
 **Verified against real hardware:** microphone and loopback capture, via the
 two `#[ignore]`d tests (`cargo test --manifest-path src-tauri/Cargo.toml -- --ignored`).
@@ -61,7 +67,56 @@ by a person. Every quality claim about the summary is currently unfounded.
 
 ## Session log
 
-### 2026-08-20 (latest) — the setup gate and a CLI summarizer
+### 2026-08-26 (latest) — local transcription made fast, hallucination runs cut
+- Performance of the post-meeting pipeline (`transcribe/local.rs`): whisper
+  now decodes with every physical core (`num_cpus`) instead of whisper.cpp's
+  default 4, and the loaded `WhisperContext` is cached for the process
+  lifetime keyed by the model file's path+size+mtime — a two-track meeting
+  no longer loads the multi-GB model twice, and the second meeting starts
+  decoding immediately. An mtime the filesystem cannot report never matches,
+  so a stale model is never served.
+- Hallucination ("Thank you." stamped every 30 s over silence, seen in a
+  real run): `set_no_context(true)` breaks the decoder feedback loop that
+  turns one invented line into a run; `set_suppress_nst(true)` suppresses
+  non-speech tokens at the decoder; and a shared, gap-aware
+  `collapse_repeated_segments` (transcribe/mod.rs) drops runs of >2
+  identical lines *only* when they sit ≥5 s apart — contiguous real repeats
+  ("Go. Go. Go.") are never touched. Applied to both local and API engines.
+- privacy-reviewer ran: no critical findings. Its major on the collapse
+  dropping real speech was fixed by making it gap-aware (above); its note
+  that preview lines are transcript text (display only, never log) carries
+  forward as a review rule for any future consumer of `TrackProgress.line`.
+- Tests: 414 Rust + 146 frontend green; clippy and fmt clean.
+- Open (minor, deliberate): the model cache holds the model in RAM even if
+  the user switches to the API route; a clear-on-route-change hook is a
+  nice-to-have.
+
+### 2026-08-26 — the app shows what it is doing
+- Two silent waits got a face (ADR-0022). While recording, each track has a
+  peak meter (`audio/level.rs`, fed from the chunk sink) plus a halo on the
+  status dot that grows with the loudest track — a muted or wrong input
+  device now looks different from a working one *during* the meeting, which
+  is the only time that knowledge is worth anything. While the pipeline runs,
+  the bar shows a real 0-100% for the local engine (the whisper callback that
+  previously only reached `log::debug!`), an indeterminate sweep for the
+  cloud route, "System audio (2/2)", a clock, and the last line whisper
+  produced.
+- Levels are their own 10 Hz command rather than a field on `RecordingState`:
+  a meter frame must not push a state event through the tray. The poll is
+  lock-free — `receiving` is answered from the meter's own staleness, never
+  from `fatal_error()`, which takes the lock the audio thread holds across
+  every encode-and-write.
+- **Both reviewers caught real things again.** Privacy: the whisper segment
+  and progress callbacks run behind a bare `extern "C"` trampoline in
+  whisper-rs 0.16, so a panic in the sink — which now reaches Tauri's event
+  system — would abort the process *after* the meeting, note unwritten; both
+  are now wrapped in `catch_unwind`. The preview line is capped at 200 chars
+  and addressed to the `main` window instead of broadcast to every webview.
+  Conventions: a doc comment had been split from its function, and two files
+  had been rewritten CRLF-to-LF; both fixed.
+- Still unverified: **the product**. Nothing below has moved.
+
+### 2026-08-20 — the setup gate and a CLI summarizer
 - **The first attempt to record a real meeting failed after the meeting.**
   The pipeline reported "the local model 'large-v3-turbo' is not installed"
   once the recording was already over. `useFirstRun` had not caught it

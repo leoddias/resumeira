@@ -127,6 +127,46 @@ pub struct Transcript {
     pub engine: Engine,
 }
 
+/// How many consecutive identical lines a transcript may keep.
+///
+/// Two is a real conversation ("Yeah." "Yeah."); a longer run of the exact
+/// same text is the signature of an engine hallucinating over near-silence —
+/// the same invented line ("Thank you.") stamped onto window after window.
+/// Both engines can do it, so the collapse runs on the shared [`Transcript`],
+/// not inside one engine.
+const MAX_IDENTICAL_RUN: usize = 2;
+
+/// The silence between two identical lines that marks them as stamped onto
+/// separate decode windows rather than actually spoken back to back. Real
+/// repeated speech ("Go. Go. Go.") is contiguous; the hallucinated kind
+/// shows up half a minute apart with nothing in between.
+const HALLUCINATION_GAP_SECS: f64 = 5.0;
+
+/// Drops the tail of any run of consecutive identical-text segments that
+/// carries the hallucination signature, keeping the first
+/// [`MAX_IDENTICAL_RUN`] of each run.
+///
+/// A repeat only counts toward a run when it sits at least
+/// [`HALLUCINATION_GAP_SECS`] after the previous line: identical lines in
+/// continuous speech are somebody actually repeating themselves and are
+/// never touched. This is deliberately the narrow cut — dropping real
+/// speech from a note is worse than keeping an invented line.
+pub(crate) fn collapse_repeated_segments(segments: Vec<Segment>) -> Vec<Segment> {
+    let mut kept: Vec<Segment> = Vec::with_capacity(segments.len());
+    let mut run = 1usize;
+    for segment in segments {
+        let hallucinated_repeat = kept.last().is_some_and(|last| {
+            last.text.trim() == segment.text.trim()
+                && segment.start - last.end >= HALLUCINATION_GAP_SECS
+        });
+        run = if hallucinated_repeat { run + 1 } else { 1 };
+        if run <= MAX_IDENTICAL_RUN {
+            kept.push(segment);
+        }
+    }
+    kept
+}
+
 impl Transcript {
     /// The transcript as plain text, one line per segment, each prefixed with
     /// whoever said it when that is known.
@@ -322,6 +362,55 @@ mod tests {
             speaker: speaker.map(str::to_owned),
             ..segment(start, start + 1.0, text)
         }
+    }
+
+    // --- collapse_repeated_segments(): the shared hallucination-run guard ---
+
+    #[test]
+    fn a_long_run_of_the_same_invented_line_is_cut_to_two() {
+        let run: Vec<Segment> = (0..10)
+            .map(|i| segment(i as f64 * 30.0, i as f64 * 30.0 + 2.0, " Thank you. "))
+            .collect();
+        let kept = collapse_repeated_segments(run);
+        assert_eq!(kept.len(), MAX_IDENTICAL_RUN);
+        assert_eq!(kept[0].start, 0.0, "the first occurrences survive");
+    }
+
+    #[test]
+    fn contiguous_repeated_speech_is_real_and_survives_untouched() {
+        // Somebody actually saying the same thing five times in a row: no
+        // long silences between the lines, so nothing is collapsed.
+        let run: Vec<Segment> = (0..5)
+            .map(|i| segment(i as f64, i as f64 + 0.8, "Go."))
+            .collect();
+        assert_eq!(collapse_repeated_segments(run).len(), 5);
+    }
+
+    #[test]
+    fn a_short_echo_in_real_conversation_is_kept() {
+        let kept = collapse_repeated_segments(vec![
+            segment(0.0, 1.0, "Yeah."),
+            segment(1.0, 2.0, "Yeah."),
+            segment(2.0, 3.0, "So, next quarter."),
+        ]);
+        assert_eq!(kept.len(), 3);
+    }
+
+    #[test]
+    fn a_repeated_line_separated_by_other_speech_is_not_a_run() {
+        let kept = collapse_repeated_segments(vec![
+            segment(0.0, 1.0, "Thanks."),
+            segment(1.0, 2.0, "Sure."),
+            segment(2.0, 3.0, "Thanks."),
+            segment(3.0, 4.0, "Sure."),
+            segment(4.0, 5.0, "Thanks."),
+        ]);
+        assert_eq!(kept.len(), 5, "only consecutive repeats are a run");
+    }
+
+    #[test]
+    fn collapsing_an_empty_transcript_is_fine() {
+        assert!(collapse_repeated_segments(Vec::new()).is_empty());
     }
 
     #[test]

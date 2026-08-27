@@ -66,6 +66,7 @@ src-tauri/
       resample.rs         # → 16 kHz mono (+ tests)
       encoder.rs          # Opus writer (+ tests)
       mixer.rs            # 2 tracks → 1 buffer for transcription (+ tests)
+      level.rs            # per-track peak + decay for the UI meter (+ tests)
     recorder.rs           # session lifecycle, paths, crash-safe flush
     transcribe/
       mod.rs              # routing policy (+ tests)

@@ -17,6 +17,68 @@ use crate::storage;
 use crate::summarize::{SummarizeError, Summary};
 use crate::transcribe::{TranscribeError, Transcript};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+/// A cloneable, optional callback the pipeline hands to its steps.
+///
+/// Optional because every test and the CLI summarizer want the pipeline
+/// without a UI attached; cloneable and `Send + Sync + 'static` because the
+/// local engine hands its copy to a blocking worker thread.
+pub struct Sink<T>(Option<Arc<dyn Fn(T) + Send + Sync>>);
+
+impl<T> Sink<T> {
+    pub fn new(report: impl Fn(T) + Send + Sync + 'static) -> Self {
+        Self(Some(Arc::new(report)))
+    }
+
+    /// A sink nobody is listening to.
+    pub fn silent() -> Self {
+        Self(None)
+    }
+
+    pub fn report(&self, value: T) {
+        if let Some(sink) = &self.0 {
+            sink(value);
+        }
+    }
+}
+
+impl<T> Clone for Sink<T> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl<T> Default for Sink<T> {
+    fn default() -> Self {
+        Self::silent()
+    }
+}
+
+/// Movement inside one track's transcription, as the engine sees it.
+///
+/// Transcribing an hour of audio takes minutes with nothing to show for it,
+/// which is indistinguishable from a hang. Engines that can say how far they
+/// are, and what they have heard, say so through this.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct TrackProgress {
+    /// How much of this track has been decoded, 0-100. `None` from an engine
+    /// that cannot say — a single cloud request either returns or does not.
+    pub percent: Option<u32>,
+    /// A line the engine has just produced, when it produced one.
+    pub line: Option<String>,
+}
+
+/// The same movement, placed in the whole transcription step.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Transcribing {
+    pub track: Track,
+    /// 1-based position of this track among the ones being transcribed.
+    pub index: usize,
+    pub total: usize,
+    pub percent: Option<u32>,
+    pub line: Option<String>,
+}
 
 /// Where the pipeline is, so the UI can say something true while it waits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,6 +127,7 @@ pub trait Transcriber {
         &self,
         track: Track,
         audio: &Path,
+        progress: Sink<TrackProgress>,
     ) -> impl std::future::Future<Output = Result<Transcript, TranscribeError>> + Send;
 }
 
@@ -108,6 +171,7 @@ pub async fn process<T, S, D, P>(
     identifier: Option<&D>,
     retention: AudioRetention,
     mut on_stage: P,
+    on_transcribing: Sink<Transcribing>,
 ) -> Result<Outcome, PipelineError>
 where
     T: Transcriber,
@@ -117,16 +181,36 @@ where
 {
     on_stage(Stage::Transcribing);
 
+    // One missing track is normal: a machine with no loopback device still
+    // records the microphone. Counted up front so "track 1 of 2" is the
+    // truth about this meeting rather than about the two tracks in theory.
+    let recorded: Vec<(Track, PathBuf)> = Track::all()
+        .into_iter()
+        .map(|track| (track, folder.join(format!("{}.opus", track.file_stem()))))
+        .filter(|(_, audio)| audio.is_file())
+        .collect();
+    let total = recorded.len();
+
     let mut parts = Vec::new();
     let mut failure: Option<TranscribeError> = None;
-    for track in Track::all() {
-        let audio = folder.join(format!("{}.opus", track.file_stem()));
-        if !audio.is_file() {
-            // One missing track is normal: a machine with no loopback device
-            // still records the microphone.
-            continue;
-        }
-        match transcriber.transcribe(track, &audio).await {
+    for (position, (track, audio)) in recorded.into_iter().enumerate() {
+        let index = position + 1;
+        let sink = on_transcribing.clone();
+        let per_track = Sink::new(move |progress: TrackProgress| {
+            sink.report(Transcribing {
+                track,
+                index,
+                total,
+                percent: progress.percent,
+                line: progress.line,
+            });
+        });
+        // An engine that reports nothing still moves the counter, so a
+        // second track is visibly under way rather than looking stuck on the
+        // first one's last reading.
+        per_track.report(TrackProgress::default());
+
+        match transcriber.transcribe(track, &audio, per_track).await {
             Ok(transcript) => parts.push(transcript),
             Err(error) => {
                 // A track that fails to transcribe must not cost the other
@@ -255,8 +339,13 @@ mod tests {
             &self,
             track: Track,
             _audio: &Path,
+            progress: Sink<TrackProgress>,
         ) -> Result<Transcript, TranscribeError> {
             self.seen.lock().expect("lock").push(track);
+            progress.report(TrackProgress {
+                percent: Some(100),
+                line: Some(format!("heard on {track:?}")),
+            });
             if let Some(rejection) = &self.rejection {
                 return Err(match rejection {
                     TranscribeError::Unauthorized { provider } => {
@@ -357,7 +446,26 @@ mod tests {
         identifier: Option<&FakeIdentifier>,
         retention: AudioRetention,
     ) -> (Result<Outcome, PipelineError>, Vec<Stage>) {
+        let (result, stages, _) =
+            run_reporting(folder, transcriber, summarizer, identifier, retention).await;
+        (result, stages)
+    }
+
+    /// Same as [`run_with`], plus everything the transcription step reported.
+    async fn run_reporting(
+        folder: &Path,
+        transcriber: &FakeTranscriber,
+        summarizer: &FakeSummarizer,
+        identifier: Option<&FakeIdentifier>,
+        retention: AudioRetention,
+    ) -> (
+        Result<Outcome, PipelineError>,
+        Vec<Stage>,
+        Vec<Transcribing>,
+    ) {
         let mut stages = Vec::new();
+        let reported = Arc::new(Mutex::new(Vec::new()));
+        let sink = reported.clone();
         let result = process(
             folder,
             transcriber,
@@ -365,9 +473,11 @@ mod tests {
             identifier,
             retention,
             |stage| stages.push(stage),
+            Sink::new(move |progress| sink.lock().expect("lock").push(progress)),
         )
         .await;
-        (result, stages)
+        let reported = reported.lock().expect("lock").clone();
+        (result, stages, reported)
     }
 
     fn turn(from: usize, to: usize, speaker: &str) -> Turn {
@@ -706,5 +816,82 @@ mod tests {
 
         assert!(result.is_ok());
         assert!(dir.path().join("mic.opus").is_file());
+    }
+
+    #[tokio::test]
+    async fn every_track_reports_its_place_in_the_transcription_step() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        write_track(dir.path(), Track::Mic);
+        write_track(dir.path(), Track::System);
+
+        let transcriber =
+            FakeTranscriber::new(vec![(Track::Mic, "my line"), (Track::System, "their line")]);
+        let (result, _, reported) = run_reporting(
+            dir.path(),
+            &transcriber,
+            &FakeSummarizer { fail: false },
+            None,
+            AudioRetention::Keep,
+        )
+        .await;
+        result.expect("the pipeline produces a note");
+
+        assert!(
+            reported.iter().all(|p| p.total == 2),
+            "both tracks were recorded, so both must be counted: {reported:?}"
+        );
+        assert_eq!(
+            reported.iter().map(|p| p.index).collect::<Vec<_>>(),
+            vec![1, 1, 2, 2],
+            "each track opens with an empty reading before the engine speaks"
+        );
+        assert!(
+            reported
+                .iter()
+                .any(|p| p.track == Track::Mic && p.line.as_deref() == Some("heard on Mic")),
+            "what the engine heard must reach the caller: {reported:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_meeting_with_one_track_is_not_counted_as_two() {
+        // The machine had no loopback device. Saying "1 of 2" would leave
+        // the user waiting for a track that was never recorded.
+        let dir = tempfile::tempdir().expect("temp dir");
+        write_track(dir.path(), Track::Mic);
+
+        let transcriber = FakeTranscriber::new(vec![(Track::Mic, "my line")]);
+        let (result, _, reported) = run_reporting(
+            dir.path(),
+            &transcriber,
+            &FakeSummarizer { fail: false },
+            None,
+            AudioRetention::Keep,
+        )
+        .await;
+        result.expect("the pipeline produces a note");
+
+        assert!(!reported.is_empty());
+        assert!(reported.iter().all(|p| p.total == 1 && p.index == 1));
+    }
+
+    #[tokio::test]
+    async fn a_pipeline_with_no_listener_still_runs() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        write_track(dir.path(), Track::Mic);
+
+        let transcriber = FakeTranscriber::new(vec![(Track::Mic, "my line")]);
+        let result = process(
+            dir.path(),
+            &transcriber,
+            &FakeSummarizer { fail: false },
+            None::<&FakeIdentifier>,
+            AudioRetention::Keep,
+            |_| {},
+            Sink::silent(),
+        )
+        .await;
+
+        assert!(result.is_ok(), "a silent sink must not change the outcome");
     }
 }

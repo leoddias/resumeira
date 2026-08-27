@@ -38,7 +38,16 @@ use std::time::Duration;
 struct MeasuringTranscriber;
 
 impl Transcriber for MeasuringTranscriber {
-    async fn transcribe(&self, track: Track, audio: &Path) -> Result<Transcript, TranscribeError> {
+    async fn transcribe(
+        &self,
+        track: Track,
+        audio: &Path,
+        progress: pipeline::Sink<pipeline::TrackProgress>,
+    ) -> Result<Transcript, TranscribeError> {
+        progress.report(pipeline::TrackProgress {
+            percent: Some(100),
+            line: None,
+        });
         let samples = decoder::decode_opus_file(audio).map_err(|error| {
             TranscribeError::LocalEngine(format!("decoding the recorded track failed: {error}"))
         })?;
@@ -145,6 +154,12 @@ async fn a_real_recording_becomes_a_real_note() {
         None::<&resumeira_lib::live::LiveIdentifier>,
         AudioRetention::Keep,
         |stage| println!("stage: {stage:?}"),
+        pipeline::Sink::new(|progress: pipeline::Transcribing| {
+            println!(
+                "transcribing {:?} ({}/{}): {:?}%",
+                progress.track, progress.index, progress.total, progress.percent
+            );
+        }),
     )
     .await
     .expect("the pipeline turns the recording into a note");

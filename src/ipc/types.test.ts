@@ -27,7 +27,7 @@ describe('recording state predicates', () => {
     const notCapturing: RecordingState[] = [
       { status: 'idle' },
       { status: 'stopping' },
-      { status: 'processing', stage: 'transcribing' },
+      { status: 'processing', stage: 'transcribing', startedAt: 0 },
       { status: 'failed', error: 'no device' },
     ];
     for (const state of notCapturing) {
@@ -40,7 +40,7 @@ describe('recording state predicates', () => {
     expect(canStart({ status: 'failed', error: 'boom' })).toBe(true);
     expect(canStart({ status: 'starting' })).toBe(false);
     expect(canStart(recording)).toBe(false);
-    expect(canStart({ status: 'processing', stage: 'saving' })).toBe(false);
+    expect(canStart({ status: 'processing', stage: 'saving', startedAt: 0 })).toBe(false);
   });
 
   it('allows stopping only while recording', () => {
@@ -55,7 +55,7 @@ describe('recording state predicates', () => {
       { status: 'starting' },
       recording,
       { status: 'stopping' },
-      { status: 'processing', stage: 'summarizing' },
+      { status: 'processing', stage: 'summarizing', startedAt: 0 },
       { status: 'failed', error: 'boom' },
     ];
     for (const state of states) {

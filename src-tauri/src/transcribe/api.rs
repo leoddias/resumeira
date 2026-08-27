@@ -272,7 +272,9 @@ impl ApiTranscriptResponse {
         };
 
         Transcript {
-            segments,
+            // The API path has no audio in hand to second-guess a segment
+            // with, so the run collapse is its only hallucination guard.
+            segments: super::collapse_repeated_segments(segments),
             language: self.language,
             engine: Engine::Api,
         }

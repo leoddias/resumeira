@@ -100,6 +100,7 @@ pub fn run() {
             commands::start_recording,
             commands::stop_recording,
             commands::recording_state,
+            commands::recording_levels,
             settings_commands::get_settings,
             settings_commands::save_settings,
             settings_commands::key_status,
