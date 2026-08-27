@@ -28,7 +28,11 @@ tests; clippy and fmt clean):
 - The app shows its own activity (ADR-0022): a per-track audio meter while
   recording, and a progress bar, track counter, clock and live transcript
   preview while the pipeline runs.
-- Secrets in the OS keychain; settings as plain JSON with no secrets in it.
+- Secrets in the OS keychain — Credential Manager on Windows, Keychain on
+  macOS, Secret Service on Linux; settings as plain JSON with no secrets in it.
+- Shipping: CI tests and bundles on all three platforms, a tag publishes a
+  draft release with `.msi` / NSIS `.exe` / portable `.exe` / `.dmg` / `.deb`
+  / `.AppImage`, and `site/` is deployed to GitHub Pages (ADR-0023).
 - Local whisper uses all physical cores and a process-lifetime model cache;
   both engines collapse gap-separated hallucination runs ("Thank you." over
   silence).
@@ -59,15 +63,54 @@ by a person. Every quality claim about the summary is currently unfounded.
 
 - The updater is intentionally unwired: it needs a keypair whose private half
   becomes a repository secret, which only a human can create and store.
-- CI has never run — there is no remote configured, so both workflows are
-  verified only by reading them.
-- The release workflow has never published a tag.
+- The draft release `v0.1.0-alpha` is sitting unpublished on GitHub. The
+  landing page's download links point at its assets, so they 404 until
+  someone publishes it.
 - Device names come from cpal at factory time, so a `TrackStatus` shows the
   default device even if capture later opened a different one.
 
 ## Session log
 
-### 2026-08-26 (latest) — local transcription made fast, hallucination runs cut
+### 2026-08-27 (latest) — the pipeline, and what building the other two platforms found
+- CI, release and Pages workflows now exist and are **green** (ADR-0023):
+  `frontend` plus a three-runner `desktop` matrix that tests and bundles on
+  Windows, macOS and Linux. Run
+  [33095118243](https://github.com/leoddias/resumeira/actions/runs/33095118243)
+  is the first all-green one.
+- A tag now produces every artefact: `.msi`, an NSIS `.exe`, a portable
+  `.exe`, a `.dmg` (aarch64), a `.deb` and an `.AppImage`. `v0.1.0-alpha` was
+  cut and built end to end; the release is a **draft**, deliberately.
+- Landing page at <https://leoddias.github.io/resumeira/>, deployed from
+  `site/` by `pages.yml`. Its download links use the v0.1.0-alpha asset names,
+  which the release run confirmed byte for byte.
+- Every build is checked for the frontend it was compiled with
+  (`.github/scripts/verify-embedded-frontend.sh`): a binary without
+  `custom-protocol` builds and tests clean and then has no UI on any machine
+  but the developer's.
+- Three real bugs fell out of compiling the ports for the first time, exactly
+  as ADR-0023 predicted:
+  - the `#[cfg(not(windows))]` loopback stub's test still called `start` with
+    the pre-ADR-0017 one-argument signature, so the crate did not compile at
+    all off Windows;
+  - `ensure_readable` used `File::open` as a "is this a usable file" test.
+    On Unix a *directory* opens fine, so a folder passed as a model path
+    reached whisper.cpp and came back as an opaque `LocalEngine` error
+    instead of `ModelMissing`. Now checked by file kind;
+  - `keyring` had only the `windows-native` feature, which silently degrades
+    to an in-memory mock elsewhere — an API key would appear to save and be
+    gone on quit. Each target now names its own store.
+- macOS needed `bundle.macOS.minimumSystemVersion: "11.0"`: tauri-cli exports
+  `MACOSX_DEPLOYMENT_TARGET` from it, and whisper.cpp's `std::filesystem` use
+  needs 10.15+. `cargo test` passed and only `tauri build` failed, which is
+  what made it confusing.
+- `.gitattributes` pins `eol=lf`: a Windows runner checks out CRLF and
+  `prettier --check` then fails on every file in the repository while passing
+  locally.
+- Not changed: the product target. System audio is still Windows-only
+  (ADR-0003); the macOS and Linux builds are microphone-only and say so in
+  the release notes, the README and the landing page.
+
+### 2026-08-26 — local transcription made fast, hallucination runs cut
 - Performance of the post-meeting pipeline (`transcribe/local.rs`): whisper
   now decodes with every physical core (`num_cpus`) instead of whisper.cpp's
   default 4, and the loaded `WhisperContext` is cached for the process
