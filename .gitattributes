@@ -1,0 +1,14 @@
+# Normalise line endings so a checkout on a Windows runner (where git sets
+# `core.autocrlf=true`) does not arrive as CRLF and fail `prettier --check`
+# on every file in the repository while looking fine locally.
+* text=auto eol=lf
+
+# Binary assets are never converted.
+*.png binary
+*.ico binary
+*.icns binary
+*.jpg binary
+*.woff binary
+*.woff2 binary
+*.opus binary
+*.wav binary
