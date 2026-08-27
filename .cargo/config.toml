@@ -8,3 +8,16 @@
 # the root — which is how CI and every agent invokes it (ADR-0016).
 [env]
 CMAKE_POLICY_VERSION_MINIMUM = "3.5"
+
+# ScreenCaptureKit reaches this crate through a Swift bridge (ADR-0024), and
+# Swift's concurrency runtime is a dylib the linker has to be told where to
+# find. The `screencapturekit` build script does emit this rpath — but
+# `cargo:rustc-link-arg` from a *dependency* is not propagated to the binary
+# that links it, so every artefact built here (the test harness first) dies at
+# load time with `dyld: Library not loaded: @rpath/libswift_Concurrency.dylib`
+# unless the flag is set again at the top level.
+#
+# `/usr/lib/swift` is where the runtime lives on macOS 10.14.4 and later,
+# which every Mac this ships to satisfies: the bundle's minimum is 13.0.
+[target.'cfg(target_os = "macos")']
+rustflags = ["-C", "link-arg=-Wl,-rpath,/usr/lib/swift"]
