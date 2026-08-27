@@ -217,11 +217,24 @@ where
 /// missing/unreadable-vs-corrupt distinction the contract requires has to be
 /// made here.
 fn ensure_readable(model_path: &Path) -> Result<(), TranscribeError> {
+    let missing = || TranscribeError::ModelMissing {
+        model: model_path.display().to_string(),
+    };
+
+    // The file *kind* is checked before the handle, because `File::open` is
+    // not a portable test for "this is a usable file": on Unix a directory
+    // opens successfully and only fails on read, so a path pointing at a
+    // folder would sail past the guard and reach whisper.cpp, which reports
+    // its own failure as an opaque `LocalEngine` error. Windows refuses the
+    // open outright, which is why this only ever failed off-Windows.
+    let metadata = std::fs::metadata(model_path).map_err(|_| missing())?;
+    if !metadata.is_file() {
+        return Err(missing());
+    }
+
     std::fs::File::open(model_path)
         .map(|_| ())
-        .map_err(|_| TranscribeError::ModelMissing {
-            model: model_path.display().to_string(),
-        })
+        .map_err(|_| missing())
 }
 
 /// How many threads whisper decodes with, given the machine's physical core
@@ -445,7 +458,9 @@ mod tests {
     #[test]
     fn an_unreadable_model_path_is_model_missing_not_a_panic() {
         let dir = tempfile::tempdir().unwrap();
-        // A directory can never be opened as a model file.
+        // A directory is not a model file. Note this is only a real test
+        // off-Windows: there `File::open` on a directory *succeeds*, so the
+        // guard has to reject it by file kind rather than by open failure.
         let not_a_file = dir.path().join("a-directory");
         std::fs::create_dir(&not_a_file).unwrap();
         let samples = sine(1.0, 440.0);
