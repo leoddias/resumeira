@@ -28,6 +28,7 @@ use std::sync::{Arc, Mutex};
 
 use screencapturekit::error::SCStreamErrorCode;
 use screencapturekit::prelude::*;
+use screencapturekit::stream::configuration::AudioSampleRate;
 use screencapturekit::stream::delegate_trait::StreamCallbacks;
 
 use crate::audio::capture::sample::interleave_audio_buffers;
