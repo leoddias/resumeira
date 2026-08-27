@@ -70,6 +70,7 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev \
             libasound2-dev \
+            libpulse-dev \
             libxdo-dev \
             libssl-dev \
             libdbus-1-dev \

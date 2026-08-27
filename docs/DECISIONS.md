@@ -458,3 +458,48 @@ that wording is part of the decision, not decoration. The macOS build is
 Apple Silicon only; there is no Intel or universal binary. Every build is
 verified to contain the frontend it was compiled with, because a binary
 missing `custom-protocol` fails silently and only on other people's machines.
+
+## ADR-0024 — System audio on all three platforms, one backend each
+**Date:** 2026-08-27 · **Status:** accepted
+**Supersedes the platform half of ADR-0003.** ADR-0003's sequencing reason
+still holds — system capture *is* per-OS work — but its conclusion, that
+macOS and Linux ship compile-time stubs, no longer does.
+**Decision:** `SystemCapture` gets a real implementation on each platform,
+behind the unchanged `CaptureSource` trait:
+Windows keeps WASAPI loopback through cpal; macOS uses **ScreenCaptureKit**
+audio (13.0+), which raises `bundle.macOS.minimumSystemVersion` to `"13.0"`
+and requires `NSScreenCaptureUsageDescription` in `Info.plist`; Linux records
+the **`@DEFAULT_MONITOR@`** PulseAudio monitor source through
+`libpulse-simple`, which PipeWire also serves via `pipewire-pulse`. A fourth
+`unsupported` backend keeps `AudioError::UnsupportedPlatform` meaningful for
+any target added later. `AudioError` gains `PermissionDenied { what, grant }`.
+**Why:** The stubs were the product's largest untrue statement — the app
+installed and ran on two platforms where the feature that defines it silently
+did not exist. Of the alternatives on macOS, ScreenCaptureKit is the only
+supported public API before 14.4 (Core Audio process taps), and requiring
+14.4 would exclude most Macs in use; a virtual audio device (BlackHole) works
+but means asking users to install a kernel extension and reroute their output,
+which breaks their speakers if the app crashes. On Linux, PulseAudio's monitor
+source was chosen over PipeWire's native API because `pipewire-pulse` serves
+the same protocol — one client covers both servers and every distribution
+still on PulseAudio, at the cost of nothing that matters here.
+**Consequences:** The three platforms are genuinely different and the
+difference is user-visible, so it is stated rather than smoothed over.
+macOS asks for **Screen Recording** — a permission named after something the
+app never does — so `PermissionDenied` carries the exact Settings path and
+the `Info.plist` string explains why an audio app wants it; SCK also needs a
+shareable display, so a headless Mac cannot record system audio at all.
+macOS captures the whole system mix, not a selected device, and neither
+non-Windows backend can name a real device, so both report what they are
+instead of guessing. Linux needs PulseAudio or PipeWire at runtime and
+`libpulse-dev` at build time; bare ALSA reports no device. The Linux backend
+is the first capture path that is not a realtime callback — it blocks on a
+thread — so `stop` waits on the worker's own acknowledgement with a deadline
+rather than an unbounded `join`, and the worker re-checks the stop flag after
+every read so no chunk reaches a recorder that is already closing its files.
+**Not verified against hardware.** The pure conversions are unit-tested
+everywhere and both backends have `#[ignore]`d hardware tests, but neither
+macOS nor Linux capture has been run against a real machine — CI proves they
+compile and their logic passes, not that a meeting comes out. Until someone
+records on each, the Windows path remains the only one with evidence behind
+it.

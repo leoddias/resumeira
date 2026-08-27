@@ -258,3 +258,139 @@ mod tests {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Raw-byte conversions, for the backends that do not go through cpal.
+//
+// macOS (ScreenCaptureKit) and Linux (the PulseAudio monitor source) both
+// hand over `f32` little-endian bytes rather than a typed cpal buffer, and
+// macOS delivers one buffer *per channel* instead of one interleaved buffer.
+// The arithmetic is the same on every platform, so it lives here — compiled
+// on those two targets, and under `test` everywhere, so the conversion that
+// decides whether a meeting is audio or noise is exercised on the developer's
+// machine too and not only on a CI runner.
+// ---------------------------------------------------------------------------
+
+/// Decodes little-endian `f32` bytes into samples.
+///
+/// A trailing partial sample is dropped rather than zero-padded: a torn
+/// frame at the end of a buffer is missing data, and inventing a sample for
+/// it would put a click in the recording.
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+pub(crate) fn f32le_to_samples(bytes: &[u8]) -> Vec<f32> {
+    bytes
+        .chunks_exact(4)
+        .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        .collect()
+}
+
+/// Turns however many raw audio buffers a platform delivered into one
+/// interleaved sample vector, and reports how many channels it holds.
+///
+/// Each entry is `(channels_in_that_buffer, little_endian_f32_bytes)`.
+/// Two shapes exist in practice and both have to work:
+///
+/// * **one buffer**, already interleaved — its own channel count is the
+///   answer, and the samples pass straight through;
+/// * **several buffers**, one per channel (planar) — ScreenCaptureKit's
+///   normal delivery — which are interleaved here.
+///
+/// Planes of unequal length are truncated to the shortest. That case should
+/// not happen, but the alternative is reading past a buffer or padding one
+/// channel with silence it never recorded; a few dropped frames at the end
+/// of a buffer are the least wrong of the three.
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn interleave_audio_buffers(buffers: &[(u32, &[u8])]) -> (Vec<f32>, u16) {
+    match buffers {
+        [] => (Vec::new(), 0),
+        [(channels, bytes)] => (
+            f32le_to_samples(bytes),
+            u16::try_from(*channels).unwrap_or(u16::MAX),
+        ),
+        planes => {
+            let decoded: Vec<Vec<f32>> = planes
+                .iter()
+                .map(|(_, bytes)| f32le_to_samples(bytes))
+                .collect();
+            let frames = decoded.iter().map(Vec::len).min().unwrap_or(0);
+            let channels = u16::try_from(decoded.len()).unwrap_or(u16::MAX);
+
+            let mut interleaved = Vec::with_capacity(frames * decoded.len());
+            for frame in 0..frames {
+                for plane in &decoded {
+                    interleaved.push(plane[frame]);
+                }
+            }
+            (interleaved, channels)
+        }
+    }
+}
+
+#[cfg(test)]
+mod raw_byte_tests {
+    use super::*;
+
+    fn le_bytes(samples: &[f32]) -> Vec<u8> {
+        samples.iter().flat_map(|s| s.to_le_bytes()).collect()
+    }
+
+    #[test]
+    fn f32le_round_trips_every_sample() {
+        let samples = [-1.0f32, -0.25, 0.0, 0.5, 1.0];
+        assert_eq!(f32le_to_samples(&le_bytes(&samples)), samples);
+    }
+
+    #[test]
+    fn a_torn_trailing_sample_is_dropped_not_padded() {
+        let mut bytes = le_bytes(&[0.5f32, -0.5]);
+        bytes.push(0x7f);
+        bytes.push(0x00);
+        // Two whole samples survive; the three stray bytes are not turned
+        // into a third, invented one.
+        assert_eq!(f32le_to_samples(&bytes), vec![0.5, -0.5]);
+    }
+
+    #[test]
+    fn empty_input_is_empty_output_not_a_panic() {
+        assert!(f32le_to_samples(&[]).is_empty());
+        let (samples, channels) = interleave_audio_buffers(&[]);
+        assert!(samples.is_empty());
+        assert_eq!(channels, 0);
+    }
+
+    #[test]
+    fn a_single_buffer_is_already_interleaved_and_passes_through() {
+        let bytes = le_bytes(&[0.1f32, 0.2, 0.3, 0.4]);
+        let (samples, channels) = interleave_audio_buffers(&[(2, &bytes)]);
+        assert_eq!(samples, vec![0.1, 0.2, 0.3, 0.4]);
+        assert_eq!(channels, 2);
+    }
+
+    #[test]
+    fn planar_buffers_are_interleaved_channel_by_channel() {
+        let left = le_bytes(&[1.0f32, 3.0, 5.0]);
+        let right = le_bytes(&[2.0f32, 4.0, 6.0]);
+        let (samples, channels) = interleave_audio_buffers(&[(1, &left), (1, &right)]);
+        assert_eq!(samples, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        assert_eq!(channels, 2);
+    }
+
+    #[test]
+    fn ragged_planes_truncate_to_the_shortest_rather_than_reading_past_one() {
+        let left = le_bytes(&[1.0f32, 3.0, 5.0]);
+        let right = le_bytes(&[2.0f32, 4.0]);
+        let (samples, channels) = interleave_audio_buffers(&[(1, &left), (1, &right)]);
+        assert_eq!(samples, vec![1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(channels, 2);
+    }
+
+    #[test]
+    fn three_planes_report_three_channels() {
+        let a = le_bytes(&[1.0f32]);
+        let b = le_bytes(&[2.0f32]);
+        let c = le_bytes(&[3.0f32]);
+        let (samples, channels) = interleave_audio_buffers(&[(1, &a), (1, &b), (1, &c)]);
+        assert_eq!(samples, vec![1.0, 2.0, 3.0]);
+        assert_eq!(channels, 3);
+    }
+}

@@ -1,12 +1,14 @@
 //! Platform capture sources: `mic` (default input) and `system` (loopback).
 //!
-//! Both sources are built on cpal and share the format-conversion helpers
-//! below, so device handling is unit-testable without ever opening a real
-//! stream. See `mic` and `system` for the platform-specific device and
-//! config selection.
+//! The microphone is cpal on all three platforms. System audio is not — it
+//! has a different mechanism per OS and only the Windows one goes through
+//! cpal, so `system` is a module of backends rather than a single file
+//! (ADR-0024). [`start_input_stream`] below is the shared cpal path both
+//! cpal-based sources use, which keeps device handling unit-testable without
+//! ever opening a real stream.
 //!
-//! Neither source asks the device to produce [`TARGET_SAMPLE_RATE`]: WASAPI
-//! shared mode does not negotiate a format, it delivers the device's mix
+//! A cpal source does not ask the device to produce [`TARGET_SAMPLE_RATE`]:
+//! WASAPI shared mode does not negotiate a format, it delivers the device's mix
 //! format regardless of what is requested, so forcing a rate here causes
 //! buffer underruns instead of resampling. Each caller passes in the
 //! device's own default config (`default_input_config` for the microphone,

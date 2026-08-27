@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Merged into the generated macOS Info.plist by the Tauri bundler.
+
+  Both keys are mandatory, not advisory: macOS terminates an app that asks
+  for either permission without a purpose string in its bundle, so leaving
+  one out does not degrade the feature, it kills the process.
+
+  The screen-recording string carries the explanation for what would
+  otherwise look like an overreach — a meeting-notes app asking to record
+  the screen. ScreenCaptureKit is the only supported way to capture system
+  audio on macOS (ADR-0024), and no video is ever requested or read.
+-->
+<plist version="1.0">
+  <dict>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Resumeira records your microphone so it can transcribe your side of the meeting. The audio stays on this Mac unless you configure a transcription service yourself.</string>
+
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>Resumeira records the audio your Mac plays — the other people in the meeting. macOS provides that only through screen recording; no image of your screen is ever captured, stored or sent.</string>
+  </dict>
+</plist>

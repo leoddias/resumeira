@@ -107,6 +107,20 @@ pub enum AudioError {
         source: std::io::Error,
     },
 
+    /// The OS refused capture until the user grants a permission.
+    ///
+    /// Distinct from every other variant on purpose: it is the one failure
+    /// the user can fix themselves, in a specific place, in about ten
+    /// seconds — and the only one where retrying without telling them
+    /// anything would leave a meeting silently half-recorded. `grant`
+    /// names the setting to open, in the OS's own words, so the message can
+    /// be shown verbatim.
+    #[error("{what} needs permission: {grant}")]
+    PermissionDenied {
+        what: &'static str,
+        grant: &'static str,
+    },
+
     #[error("system audio capture is not implemented on this platform yet")]
     UnsupportedPlatform,
 }
