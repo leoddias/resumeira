@@ -173,7 +173,9 @@ mod stub {
         #[test]
         fn start_reports_unsupported_platform() {
             let mut capture = SystemCapture::new();
-            let err = capture.start(Box::new(|_| {})).unwrap_err();
+            let err = capture
+                .start(Box::new(|_| {}), Box::new(|_| {}))
+                .unwrap_err();
             assert!(matches!(err, AudioError::UnsupportedPlatform));
         }
 
