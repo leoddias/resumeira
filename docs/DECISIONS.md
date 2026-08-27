@@ -428,3 +428,33 @@ wrapped in `catch_unwind`: whisper-rs installs them behind a bare `extern
 "C"` trampoline, where a panic aborts the process, and neither reporting a
 percentage nor previewing a line is worth losing a finished meeting to.
 
+## ADR-0023 — The release pipeline builds all three platforms; only Windows is supported
+**Date:** 2026-08-27 · **Status:** accepted
+**Decision:** CI and the release workflow build, test and bundle on Windows,
+macOS and Linux, and a tag publishes installers for all three: `.msi` and an
+NSIS `.exe` plus a portable `.exe` on Windows, a `.dmg` on macOS (Apple
+Silicon), and `.deb` + `.AppImage` on Linux. `keyring` gains a real
+per-platform backend (`windows-native`, `apple-native`,
+`sync-secret-service`) instead of the single Windows feature. The *product*
+target is unchanged: ADR-0003 stands, system-audio capture is Windows-only,
+and the macOS and Linux builds are explicitly labelled microphone-only in the
+release notes and on the landing page. A static landing page in `site/` is
+published to GitHub Pages by its own workflow.
+**Why:** The `#[cfg(not(target_os = "windows"))]` stubs, the `Cargo.toml`
+feature matrix and the bundler config are the port's whole surface, and none
+of it was ever compiled — so the "additive port" ADR-0003 promises was
+decaying untested. Building the other two costs runner time and nothing else,
+and it turns the port from a claim into a check. Shipping the artefacts is
+close to free once they build, and a microphone-only recorder is still useful
+for an in-person meeting. The keyring change is not optional once those builds
+ship: with only `windows-native` enabled, keyring falls back to an in-memory
+mock on the other two, so an API key would appear to save and be gone on quit.
+**Consequences:** CI is a three-runner matrix and takes proportionally longer;
+`fail-fast` is off so one platform's failure still reports the others. Linux
+needs system packages on the runner (WebKitGTK, ALSA, D-Bus, the tray
+indicator). A green macOS or Linux build is *not* a statement that the product
+works there — the release notes and the landing page say so explicitly, and
+that wording is part of the decision, not decoration. The macOS build is
+Apple Silicon only; there is no Intel or universal binary. Every build is
+verified to contain the frontend it was compiled with, because a binary
+missing `custom-protocol` fails silently and only on other people's machines.

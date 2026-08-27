@@ -33,8 +33,22 @@ whisper-rs = "0.16.0"
 num_cpus = "1.16"
 reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "json", "stream", "multipart"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
-keyring = { version = "3.6.3", features = ["windows-native"] }
 tauri-plugin-opener = "2.5.4"
+
+# The credential store is per-OS, and keyring only compiles the backend you
+# ask for. Without a platform feature it silently falls back to an in-memory
+# mock, which would "store" an API key that vanishes on quit — so each target
+# names its own real store (ADR-0023).
+[target.'cfg(windows)'.dependencies]
+keyring = { version = "3.6.3", features = ["windows-native"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3.6.3", features = ["apple-native"] }
+
+# Secret Service over D-Bus (GNOME Keyring, KWallet). `crypto-rust` keeps the
+# session encryption pure Rust instead of linking OpenSSL.
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3.6.3", features = ["sync-secret-service", "crypto-rust"] }
 
 [dev-dependencies]
 tempfile = "3.27.0"

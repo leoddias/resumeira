@@ -1,19 +1,45 @@
 name: Release
 
+# Cutting a release is a deliberate act: push a tag like `v0.1.0-alpha` and
+# this builds the installers on all three platforms and publishes them as a
+# GitHub Release. Nothing here runs on an ordinary push — CI artifacts are
+# auth-gated and expire in 14 days, which is why they cannot serve as a public
+# download.
+#
+# The release is created as a **draft**: the binaries are unsigned (ADR-0014),
+# so Windows SmartScreen and macOS Gatekeeper will both warn about them, and
+# whoever publishes should have read the notes first.
+#
+# No updater artifacts are produced yet: `tauri-plugin-updater` is not a
+# dependency, so there is nothing to sign and no `latest.json` to generate.
+# When the updater lands (docs/ROADMAP.md § Manual step), that step is added
+# here alongside the signing secrets.
 on:
   push:
-    tags:
-      - 'v*'
+    tags: ['v*']
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  # Re-runs the same checks as ci.yml's `frontend` and `rust` jobs so a tag
-  # pushed on a commit that never went through CI (or went red) cannot
-  # publish a release. Keep these steps in sync with ci.yml.
-  test:
-    runs-on: windows-latest
+  build:
+    name: Build (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            label: Windows
+            bundles: msi,nsis
+          - os: macos-latest
+            label: macOS
+            bundles: app,dmg
+          - os: ubuntu-22.04
+            label: Linux
+            bundles: deb,appimage
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -21,52 +47,108 @@ jobs:
           node-version: 22
           cache: npm
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
-      - run: npm ci
-      - run: npm run lint
-      - run: npm run format:check
-      - run: npm test
-      - run: npm run build
-      - name: Format
-        run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
-      - name: Clippy
-        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
-      - name: Test
-        run: cargo test --manifest-path src-tauri/Cargo.toml
+          key: release-${{ matrix.os }}
 
-  release:
-    needs: test
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
+      - name: System dependencies (Linux)
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libasound2-dev \
+            libxdo-dev \
+            libssl-dev \
+            libdbus-1-dev \
+            libgtk-3-dev \
+            build-essential \
+            patchelf \
+            file \
+            cmake
+
       - run: npm ci
+
+      # `generate_context!` embeds `dist/` at compile time, so the frontend is
+      # built before any cargo command — including the tests below.
       - run: npm run build
-      - name: Build and publish release
-        uses: tauri-apps/tauri-action@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Signs the updater artifacts (latest.json + .sig files), not the
-          # Windows executable itself. See ADR-0014: this build ships without
-          # an Authenticode code-signing certificate.
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      # A release must not be cut from code that does not pass its own gate.
+      - run: npm test
+      - run: cargo test --manifest-path src-tauri/Cargo.toml
+        timeout-minutes: 45
+
+      - name: Build installers
+        timeout-minutes: 60
+        run: npm run tauri -- build --bundles ${{ matrix.bundles }}
+
+      - name: Verify the frontend is embedded in the binary
+        shell: bash
+        run: bash .github/scripts/verify-embedded-frontend.sh
+
+      - name: Collect installers
+        shell: bash
+        run: |
+          mkdir -p dist-release
+          # Only the installable artefacts; the bundle directory also holds
+          # intermediate app directories that are useless to a downloader.
+          find src-tauri/target/release/bundle \
+            \( -name '*.msi' -o -name '*-setup.exe' -o -name '*.dmg' \
+               -o -name '*.deb' -o -name '*.AppImage' \) \
+            -exec cp {} dist-release/ \;
+          ls -la dist-release
+
+      # The bundler produces installers; the binary they install runs on its
+      # own. Shipping it means a user can run Resumeira without writing to
+      # Program Files or the registry — which is also the only way to try it on
+      # a machine where they are not allowed to install software.
+      - name: Collect the portable executable
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          version=$(node -p "require('./package.json').version")
+          cp src-tauri/target/release/resumeira.exe \
+            "dist-release/Resumeira_${version}_x64_portable.exe"
+          ls -la dist-release
+
+      - uses: actions/upload-artifact@v4
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: 'Resumeira ${{ github.ref_name }}'
-          releaseBody: 'See the assets below to download and install.'
-          releaseDraft: false
-          prerelease: false
+          name: installers-${{ matrix.label }}
+          path: dist-release/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish draft release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: installers
+          merge-multiple: true
+
+      - run: ls -la installers
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: installers/*
+          # Draft, not published: someone has to read the notes and decide the
+          # binaries are ready to hand to people.
+          draft: true
+          generate_release_notes: true
+          body: |
+            **Pre-alpha.** Resumeira has not been dogfooded yet — see the
+            README for what works and what does not.
+
+            **System audio is Windows-only** (ADR-0003). The macOS and Linux
+            builds record the microphone; the loopback track reports that the
+            platform is unsupported. They exist so the port stays compilable,
+            not because the product works there yet.
+
+            These installers are **unsigned**. Windows SmartScreen will say the
+            publisher is unknown, and macOS Gatekeeper will refuse to open the
+            app until you allow it in System Settings → Privacy & Security.
+            Building from source avoids both.

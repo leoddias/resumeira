@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Resumeira — local-first meeting notes</title>
+    <meta
+      name="description"
+      content="Records your microphone and your computer's audio, transcribes the meeting, and writes a note with the summary, decisions and action items. No bot joins your call. Free and open source, AGPL-3.0."
+    />
+    <meta property="og:title" content="Resumeira — local-first meeting notes" />
+    <meta
+      property="og:description"
+      content="No bot in your call. No account. Transcription can run entirely offline. Your notes are Markdown files you own."
+    />
+    <meta property="og:type" content="website" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🎙️</text></svg>"
+    />
+    <style>
+      :root {
+        --bg: #14161a;
+        --surface: #1a1e24;
+        --border: #2a2f37;
+        --fg: #e6e8eb;
+        --muted: #9aa3ad;
+        --accent: #6ea8fe;
+        --danger: #f2777a;
+        color-scheme: dark;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font-family:
+          'Segoe UI',
+          system-ui,
+          -apple-system,
+          sans-serif;
+        line-height: 1.6;
+      }
+
+      .wrap {
+        max-width: 60rem;
+        margin: 0 auto;
+        padding: 0 1.25rem;
+      }
+
+      header {
+        padding: 4rem 0 2rem;
+        text-align: center;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: clamp(2.2rem, 6vw, 3.4rem);
+        letter-spacing: -0.03em;
+      }
+
+      .tagline {
+        margin: 0.5rem 0 0;
+        font-size: clamp(1rem, 2.5vw, 1.25rem);
+        color: var(--muted);
+      }
+
+      .status {
+        display: inline-block;
+        margin-top: 1.25rem;
+        padding: 0.35rem 0.75rem;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        font-size: 0.8rem;
+        color: var(--muted);
+      }
+
+      h2 {
+        margin: 3rem 0 1rem;
+        font-size: 1.4rem;
+        letter-spacing: -0.01em;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+        gap: 1rem;
+      }
+
+      .card {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 1rem;
+        background: var(--surface);
+      }
+
+      .card h3 {
+        margin: 0 0 0.35rem;
+        font-size: 1rem;
+      }
+
+      .card p {
+        margin: 0;
+        font-size: 0.9rem;
+        color: var(--muted);
+      }
+
+      ul.plain {
+        padding-left: 1.1rem;
+        color: var(--muted);
+      }
+
+      ul.plain li {
+        margin-bottom: 0.4rem;
+      }
+
+      ul.plain strong {
+        color: var(--fg);
+      }
+
+      code,
+      pre {
+        font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+        font-size: 0.85rem;
+      }
+
+      pre {
+        background: #0f1114;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 0.85rem 1rem;
+        overflow-x: auto;
+      }
+
+      .cta {
+        display: inline-block;
+        margin-top: 0.5rem;
+        padding: 0.55rem 1.1rem;
+        border: 1px solid var(--accent);
+        border-radius: 6px;
+        color: var(--accent);
+        text-decoration: none;
+        font-weight: 600;
+      }
+
+      .cta:hover,
+      a:hover {
+        text-decoration: underline;
+      }
+
+      a {
+        color: var(--accent);
+      }
+
+      .callout {
+        border-left: 3px solid var(--danger);
+        background: var(--surface);
+        padding: 0.85rem 1rem;
+        border-radius: 0 6px 6px 0;
+        font-size: 0.9rem;
+      }
+
+      footer {
+        margin: 4rem 0 3rem;
+        padding-top: 1.5rem;
+        border-top: 1px solid var(--border);
+        font-size: 0.85rem;
+        color: var(--muted);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header>
+        <h1>Resumeira</h1>
+        <p class="tagline">
+          Local-first meeting notes. It records the room and the call, transcribes them, and writes
+          the note. No bot joins your meeting.
+        </p>
+        <p class="status">Pre-alpha · not yet dogfooded · AGPL-3.0</p>
+      </header>
+
+      <h2>What it does</h2>
+      <p>
+        Resumeira records two tracks at once — your microphone and whatever your computer is playing
+        — transcribes them, and turns the transcript into a Markdown note with a summary, the
+        decisions taken, and action items with owners. Because it captures the machine's own audio
+        rather than joining the call, it works the same for a hybrid meeting, a Teams call, and two
+        people at a table.
+      </p>
+
+      <div class="grid">
+        <div class="card">
+          <h3>No bot in the call</h3>
+          <p>
+            Nothing appears in the participant list, and nobody has to approve a recorder. It
+            captures the audio your machine already has.
+          </p>
+        </div>
+        <div class="card">
+          <h3>Transcription can be offline</h3>
+          <p>
+            A downloaded Whisper model transcribes on your CPU, or you point it at Groq/OpenAI with
+            your own key. You choose which — there is no fallback in either direction.
+          </p>
+        </div>
+        <div class="card">
+          <h3>Your files</h3>
+          <p>
+            Notes are Markdown in a folder you pick. Open them in Obsidian, grep them, back them up
+            by copying the folder. The database is only a search index and can be rebuilt.
+          </p>
+        </div>
+        <div class="card">
+          <h3>No account, no telemetry</h3>
+          <p>
+            Nothing to sign up for, and no analytics. API keys live in the OS keychain and never
+            cross into the app's web view.
+          </p>
+        </div>
+      </div>
+
+      <h2>How a meeting becomes a note</h2>
+      <ul class="plain">
+        <li>
+          <strong>Record:</strong> microphone and system audio as two separate Opus tracks, written
+          incrementally so a crash costs seconds, not the meeting.
+        </li>
+        <li>
+          <strong>Transcribe:</strong> local Whisper, or Groq/OpenAI with your key — the route is
+          resolved before recording starts, so you never discover at the end that it could not run.
+        </li>
+        <li>
+          <strong>Summarize:</strong> your own LLM key, or an agent CLI already installed on your
+          machine (<code>claude</code>, <code>codex</code>, <code>gemini</code>).
+        </li>
+        <li>
+          <strong>Write:</strong> one Markdown note per meeting, plus a SQLite index for search that
+          is rebuildable from the notes themselves.
+        </li>
+      </ul>
+
+      <h2>What it does not do yet</h2>
+      <p class="callout">
+        <strong>Nobody has used it for a real meeting yet.</strong> The whole path is wired and
+        covered by tests, but no note produced by the full pipeline has been read by a person — so
+        treat any claim about note <em>quality</em> as untested. There is also no live transcription
+        while you record, and no local summarization: summarizing sends the transcript to the LLM
+        provider you configured, with your key. If that is not acceptable to you, this app cannot
+        write your notes today.
+      </p>
+
+      <h2>Privacy, concretely</h2>
+      <p>
+        Audio and transcripts leave the machine only through a route you configured yourself, and
+        never as a fallback: a missing local model is an error you see, not a silent upload. There
+        is no telemetry. Transcripts, audio and API keys are never written to the log.
+      </p>
+
+      <h2>Download</h2>
+      <p>
+        Version <strong>0.1.0-alpha</strong>. Pre-alpha means exactly that — try it on a meeting you
+        could afford to take notes for by hand.
+      </p>
+
+      <div class="grid">
+        <div class="card">
+          <h3>Windows</h3>
+          <p>
+            <a
+              href="https://github.com/leoddias/resumeira/releases/download/v0.1.0-alpha/Resumeira_0.1.0_x64-setup.exe"
+              >Installer (.exe)</a
+            >
+            &nbsp;·&nbsp;
+            <a
+              href="https://github.com/leoddias/resumeira/releases/download/v0.1.0-alpha/Resumeira_0.1.0_x64_en-US.msi"
+              >MSI</a
+            >
+            <br />64-bit, installs to Program Files. The only platform where system-audio capture
+            works.
+          </p>
+        </div>
+        <div class="card">
+          <h3>Windows, portable</h3>
+          <p>
+            <a
+              href="https://github.com/leoddias/resumeira/releases/download/v0.1.0-alpha/Resumeira_0.1.0_x64_portable.exe"
+              >Executable (.exe)</a
+            >
+            <br />No installer: download it, run it, delete it. Needs the WebView2 runtime, which
+            Windows 11 and up-to-date Windows 10 already have.
+          </p>
+        </div>
+        <div class="card">
+          <h3>macOS</h3>
+          <p>
+            <a
+              href="https://github.com/leoddias/resumeira/releases/download/v0.1.0-alpha/Resumeira_0.1.0_aarch64.dmg"
+              >Disk image (.dmg)</a
+            >
+            <br />Apple Silicon. Microphone only — see the note below.
+          </p>
+        </div>
+        <div class="card">
+          <h3>Linux</h3>
+          <p>
+            <a
+              href="https://github.com/leoddias/resumeira/releases/download/v0.1.0-alpha/Resumeira_0.1.0_amd64.AppImage"
+              >AppImage</a
+            >
+            &nbsp;·&nbsp;
+            <a
+              href="https://github.com/leoddias/resumeira/releases/download/v0.1.0-alpha/Resumeira_0.1.0_amd64.deb"
+              >Debian package (.deb)</a
+            >
+            <br />x86-64. Microphone only — see the note below.
+          </p>
+        </div>
+      </div>
+
+      <p class="callout">
+        <strong>System audio is Windows-only today.</strong> Capturing what the machine plays is
+        per-OS work: Windows gets it from WASAPI loopback, macOS needs ScreenCaptureKit and a
+        permission dance, Linux needs PipeWire. The macOS and Linux builds record your microphone
+        and report the second track as unsupported — they exist so the port stays honest and
+        compilable, not because the product works there yet.
+      </p>
+
+      <p class="callout">
+        These builds are <strong>unsigned</strong>, because code-signing certificates cost money
+        this project does not take. Windows SmartScreen will call the publisher unknown — “More
+        info”, then “Run anyway”. macOS will refuse the first launch; allow it in
+        <em>System Settings → Privacy &amp; Security</em>. Building from source avoids both.
+      </p>
+
+      <p>
+        <a class="cta" href="https://github.com/leoddias/resumeira/releases">All releases</a>
+      </p>
+
+      <h2>Or build it</h2>
+      <p>
+        The audio stack compiles libopus and whisper.cpp from source, so a build needs Node 22,
+        Rust, CMake and a C/C++ toolchain (on Windows, the MSVC “Desktop development with C++”
+        workload):
+      </p>
+      <pre><code>git clone https://github.com/leoddias/resumeira.git
+cd resumeira
+npm install
+npm run tauri dev</code></pre>
+      <p>
+        <a class="cta" href="https://github.com/leoddias/resumeira">Read the source on GitHub</a>
+      </p>
+
+      <footer>
+        <p>
+          Free and open source under
+          <a href="https://github.com/leoddias/resumeira/blob/main/LICENSE">AGPL-3.0</a>. © Leonardo
+          Dias.
+        </p>
+      </footer>
+    </div>
+  </body>
+</html>

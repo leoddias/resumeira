@@ -14,9 +14,9 @@ explicitly configured.
 > the background. Every part is covered by unit tests, and microphone and
 > loopback capture are verified against real hardware — but nobody has sat
 > through an actual meeting with it and read the note that came out. Until
-> that happens, treat any claim about note *quality* as untested. There is
-> also no packaged release to download, the eventual build will be unsigned,
-> macOS/Linux are not supported, and live/streaming transcription does not
+> that happens, treat any claim about note *quality* as untested. The
+> builds are unsigned, the macOS and Linux builds record the microphone only
+> (system audio is Windows-only), and live/streaming transcription does not
 > exist — see [What is not built yet](#what-is-not-built-yet).
 
 ## Why it exists
@@ -48,7 +48,8 @@ transcribe entirely offline.
 Building Resumeira from source requires a full native toolchain — the audio
 stack compiles libopus and whisper.cpp from C/C++.
 
-- Windows 10/11 (macOS and Linux are on the roadmap, not usable today)
+- Windows 10/11 to *use* it; macOS and Linux build and run, but capture the
+  microphone only (ADR-0003, ADR-0023)
 - [Node.js](https://nodejs.org/) 22+
 - [Rust](https://rustup.rs/) stable
 - **CMake** and the **MSVC C++ build tools** (Visual Studio Build Tools with
@@ -66,13 +67,30 @@ manifest path, so a copy next to `src-tauri/Cargo.toml` would be invisible to
 
 ## Installing a pre-built release
 
-There is no packaged release yet. Once one exists it will ship as an unsigned
-`.msi`/`.exe` through GitHub Releases (ADR-0014) — no code-signing
-certificate has been purchased for this validation phase. When you run an
-unsigned installer, Windows SmartScreen will show **"Windows protected your
-PC."** Click **"More info"**, then **"Run anyway"** to proceed. This is
-expected for an unsigned build from a small, auditable open-source project;
-it is not a sign the installer is broken.
+Every tag published on GitHub Releases carries builds for all three
+platforms (ADR-0023):
+
+| Platform | Artefacts |
+|---|---|
+| Windows | `.msi`, an NSIS `.exe` installer, and a portable `.exe` that installs nothing |
+| macOS (Apple Silicon) | `.dmg` |
+| Linux (x86-64) | `.AppImage`, `.deb` |
+
+**Only the Windows build is a supported product.** System-audio capture is
+Windows-only (ADR-0003); the macOS and Linux builds record the microphone and
+report the second track as unsupported. They exist so the port stays
+compilable and honest, not because the product works there yet.
+
+Every build is **unsigned** (ADR-0014) — no code-signing certificate has
+been purchased for this validation phase. Windows SmartScreen will show
+**"Windows protected your PC."**; click **"More info"**, then **"Run anyway"**.
+macOS Gatekeeper will refuse the first launch until you allow the app in
+*System Settings → Privacy & Security*. Both are expected for an unsigned
+build from a small, auditable open-source project; neither means the
+installer is broken.
+
+There is also a landing page in `site/`, published to GitHub Pages by
+`.github/workflows/pages.yml` on any push that touches it.
 
 ## Development
 
