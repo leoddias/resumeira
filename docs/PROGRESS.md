@@ -69,10 +69,11 @@ by a person. Every quality claim about the summary is currently unfounded.
 
 - The updater is intentionally unwired: it needs a keypair whose private half
   becomes a repository secret, which only a human can create and store.
-- The draft release `v0.1.0-alpha` is sitting unpublished on GitHub. The
-  landing page's download links point at its assets, so they 404 until
-  someone publishes it. It also predates the macOS/Linux capture backends —
-  cut a new tag rather than publishing that one.
+- The draft release `v0.1.1-alpha` is sitting unpublished on GitHub, with all
+  six artefacts built. The landing page's download links point at its assets
+  — verified name-for-name against the release — so they 404 until someone
+  publishes it. (`v0.1.0-alpha` was deleted: it predated system audio on
+  macOS and Linux.)
 - **macOS and Linux system audio is unverified against hardware.** Highest
   risk on macOS: the TCC permission flow and whether ScreenCaptureKit
   actually delivers audio with no video handler registered. On Linux: whether
@@ -109,8 +110,27 @@ by a person. Every quality claim about the summary is currently unfounded.
   `screencapturekit` build script emits does **not** propagate to the binary
   that links it, so `/usr/lib/swift` had to be added to `.cargo/config.toml`
   or every artefact died at load time on `libswift_Concurrency.dylib`.
-- Tests: 421 Rust + 146 frontend green on all three runners; clippy and fmt
-  clean. **No hardware verification on macOS or Linux** — see Blockers.
+- privacy-reviewer ran and returned **BLOCK** on a real critical: `start`
+  discarded `add_output_handler`'s result, and ScreenCaptureKit can refuse a
+  handler while `start_capture` still succeeds — a 45-minute call transcribed
+  from the microphone alone and reported as a success. Fixed, along with its
+  class (ADR-0025): a track that started, never faulted and delivered zero
+  samples is now an error, so no future backend can fail silently that way.
+  Also from the review: `on_stop` dropped (SCK only reports error stops, so it
+  double-reported), `CAPTURE_RATE` typed as the framework's enum (SCK
+  substitutes 48 kHz for an unsupported rate with no way to read it back — a
+  bare `44_100` would have shipped a permanently pitch-shifted track), a
+  single audio buffer now truncated to whole frames, a buffer with samples but
+  no channel count now an error instead of "no audio", and the empty-display
+  message now names permission revocation as well as a headless Mac.
+- CI grew two teeth: clippy now runs on all three runners (a `#[cfg]`-gated
+  backend is invisible to a Windows-only lint pass), and the built `.app` is
+  interrogated for its two usage strings and its minimum system version —
+  macOS kills a process whose bundle lacks them, and the plist merge is
+  implicit enough to break silently.
+- Tests: 425 Rust + 146 frontend green on all three runners; clippy and fmt
+  clean everywhere. `v0.1.1-alpha` built all six artefacts.
+  **No hardware verification on macOS or Linux** — see Blockers.
 
 ### 2026-08-27 — the pipeline, and what building the other two platforms found
 - CI, release and Pages workflows now exist and are **green** (ADR-0023):
